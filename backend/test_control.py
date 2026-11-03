@@ -3,6 +3,7 @@ import io
 import json
 import os
 import socket
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -169,12 +170,12 @@ class Control(unittest.TestCase):
         h=self.host();h["bindings"]["deploy"]={"credential_id":"deploy","username":"operator"};main.db.put("host",h)
         s=self.req("post","services",{"host_id":h["id"],"name":"api","directory":"/srv/api","compose_service":"api","health_url":"http://127.0.0.1:8080/"})
         before={"image":"api:v1","image_id":"sha:1","container":"abcd","ports":[8080],"running":True}
-        def execute(tr,s,image,b,step):
+        def execute(tr,s,image,b,step,config_hash):
             step("update")
             if image.endswith("bad"):
                 error("健康检查未通过")
             return {**b,"image":image,"health":"HTTP 200"}
-        with patch("backend.sshops.connect",return_value=nullcontext(object())),patch("backend.sshops.live",return_value=before),patch("backend.sshops.deploy",side_effect=execute),patch("backend.sshops.health",return_value=("ok","HTTP 200")):
+        with patch("backend.sshops.connect",return_value=nullcontext(object())),patch("backend.sshops.live",return_value=before),patch("backend.sshops.target_hash",return_value="a"*64),patch("backend.sshops.deploy",side_effect=execute),patch("backend.sshops.health",return_value=("ok","HTTP 200")):
             for tag,status in (("v2","succeeded"),("bad","unknown")):
                 d={"host_id":h["id"],"service_id":s["id"],"image":"api:"+tag}
                 t=self.req("post","deployments",d);self.req("post","tasks/"+t["id"]+"/confirm",{})
@@ -225,20 +226,20 @@ class Control(unittest.TestCase):
         cfg={"directory":"/srv/order app","config_path":"compose.yaml","compose_service":"orders",
              "image_variable":"ORDERS_IMAGE","ports":[8010],"health_url":"http://127.0.0.1:8010/ready"}
         before={"image":"orders:v1","container":"abc","image_id":"sha:old","ports":[8010],"running":True}
-        after={**before,"image":"orders:v2","container":"def","image_id":"sha:new"}
+        after={**before,"image":"orders:v2","container":"def","image_id":"sha:new","directory":"/srv/order app","config_files":["/srv/order app/compose.yaml"]}
         calls=[]
         def command(tr,cmd,**kwargs):
             calls.append(cmd)
-            if "config --format" in cmd:return 0,"orders:v2"
+            if "config --format" in cmd:return 0,"a"*64
             if "image inspect" in cmd:return 0,"sha:new"
             return 0,""
         with patch("backend.sshops.run",side_effect=command),patch("backend.sshops.live",side_effect=[before,after]),patch("backend.sshops.health",return_value=("ok","HTTP 200")):
-            result=sshops.deploy(object(),cfg,"orders:v2",before,lambda msg:None)
+            result=sshops.deploy(object(),cfg,"orders:v2",before,lambda msg:None,"a"*64)
         self.assertEqual(result["image_id"],"sha:new")
         self.assertTrue(any("up -d --no-deps -- orders" in c for c in calls))
         with patch("backend.sshops.run",return_value=(0,"orders:wrong")) as cmd,patch("backend.sshops.live",return_value=before):
             with self.assertRaises(main.HTTPException):
-                sshops.deploy(object(),cfg,"orders:v2",before,lambda msg:None)
+                sshops.deploy(object(),cfg,"orders:v2",before,lambda msg:None,"a"*64)
             self.assertEqual(cmd.call_count,1)
 
     def test_real_jump_channel_uses_separate_target_account(self):
@@ -305,6 +306,139 @@ class Control(unittest.TestCase):
             self.assertEqual(inspection.mapping_probe(s,"p2p",cfg)[0],"unverified")
             self.assertEqual(inspection.mapping_probe(s,"forward",cfg)[0],"ok")
             self.assertEqual(run.call_count,1)
+
+    def test_pinned_context_and_interrupted_tool_reply(self):
+        h=self.host();other=self.host("other")
+        m=self.req("post","models",{"name":"small","model":"fixture","base_url":"http://localhost/v1","capacity":8192,"tools":False})
+        chat=self.req("post","chats",{"host_id":h["id"],"model_id":m["id"],"constraints":"只分析当前服务，不重启"})
+        cid=chat["id"];ctx="chats/"+cid+"/context";msg="chats/"+cid+"/messages"
+        task=main.db.new("task",kind="deploy",action="deploy",status="unknown",host_id=h["id"],service_id=None,chat_id=cid,
+                         plan={"after":{"image":"old:v2"}},updated_at="2026-11-03",request_id=cid+":interrupted")
+        for _ in range(20):
+            main.db.new("message",chat_id=cid,generation=0,role="user",content="history"*80)
+        seen=[]
+        def complete(db,m,messages,*args):
+            seen.append(json.loads(messages[-1]["content"]));return {"content":"答复"}
+        with patch("backend.controller.completion",side_effect=complete):
+            self.req("post",msg,{"content":"x"*4000})
+        context=seen[0]["scope"]
+        self.assertEqual(context["constraints"],chat["constraints"])
+        self.assertIn(task["id"],str(context["sources"]));self.assertEqual(context["mode"],"inspect")
+        self.assertTrue(any(r["name"]=="history_summary" for r in context["sources"]))
+        main.db.new("message",role="user",chat_id=cid,content="同一请求",generation=0,model_id=m["id"],request_id="interrupted")
+        with patch("backend.controller.completion",side_effect=AssertionError("must not rerun model")):
+            self.assertEqual(self.req("post",msg,{"content":"同一请求","request_id":"interrupted"})["task"]["id"],task["id"])
+            self.req("post",msg,{"content":"不同请求","request_id":"interrupted"},409)
+        self.req("patch","chats/"+cid,{"host_id":other["id"]})
+        switched=self.req("get",ctx)
+        self.assertNotIn(task["id"],str(switched));self.assertNotIn("historyhistory",str(switched))
+        self.assertEqual(switched["constraints"],chat["constraints"])
+
+    def test_preview_drift_invalidates_confirmation_without_changing_archive(self):
+        h=self.host();h["bindings"]["deploy"]={"username":"deploy","credential_id":"test"};main.db.put("host",h)
+        s=self.req("post","services",{"host_id":h["id"],"name":"api","directory":"/srv/api","compose_service":"api","ports":[80],"health_url":"http://127.0.0.1:80"})
+        s.update(verified={"image":"api:v1","image_id":"initial","ports":[80],"directory":"/srv/api"},state="verified")
+        main.db.put("service",s)
+        live={"image":"api:other","image_id":"different","ports":[8080],"directory":"/srv/other","config_files":["/srv/other/compose.yaml"],"running":True,"container":"container"}
+        with patch("backend.sshops.connect",return_value=nullcontext(object())),patch("backend.sshops.live",return_value=live),patch("backend.sshops.target_hash",side_effect=["a"*64,"b"*64]),patch("backend.sshops.deploy") as write:
+            task=self.req("post","deployments",{"host_id":h["id"],"service_id":s["id"],"image":"api:v2"})
+            self.assertEqual(task["plan"]["drift"]["image"],{"last_verified":"api:v1","observed":"api:other"})
+            self.assertIn("config_file",task["plan"]["drift"])
+            self.req("post","tasks/"+task["id"]+"/confirm",{},409)
+            self.assertEqual(main.db.get("task",task["id"])["status"],"stale")
+            write.assert_not_called()
+        self.assertEqual(main.db.get("service",s["id"]),s)
+
+    def test_external_ssh_public_probe_fails_closed_and_records_source(self):
+        h=self.host();node=self.req("post","hosts",{"name":"outside","address":"192.0.2.45","port":22})
+        spec={"probe_host_id":node["id"],"host":"127.0.0.1","protocol":"tcp","port":443}
+        d={"host_id":h["id"],"name":"app","public_probe":spec}
+        self.req("post","services",{**d,"public_probe":{**spec,"probe_host_id":h["id"]}},400)
+        for alias in ("localhost","::ffff:127.0.0.1","127.0.0.2"):
+            candidate=self.req("post","hosts",{"name":"alias","address":alias,"port":2222})
+            self.req("post","services",{**d,"public_probe":{**spec,"probe_host_id":candidate["id"]}},400)
+        s=self.req("post","services",d)
+        def execute(tr,cmd,**options):
+            # Execute the exact standard-library program sent to the remote SSH session.
+            exe,flag,code,script,arg=shlex.split(cmd)
+            self.assertEqual([exe,flag,code],["/usr/bin/python3","-I","-c"])
+            r=subprocess.run([sys.executable,flag,code,script,arg],capture_output=True,text=True,timeout=6)
+            return r.returncode,r.stdout
+        with patch("backend.sshops.connect",return_value=nullcontext(object())) as conn,patch("backend.sshops.run",side_effect=execute):
+            status,ev=inspection.public_probe(s["public_probe"],main.db,h["id"])
+            self.assertEqual(status,"unverified");self.assertIn("只允许登记的公网地址",ev)
+            self.assertEqual(conn.call_args.args[1]["id"],node["id"]);self.assertEqual(conn.call_args.args[2],"inspect")
+        with patch.dict(os.environ,{"AIBOT_EXTERNAL_PROBE":"1"}),patch("backend.sshops.connect",side_effect=OSError()),patch("backend.public_probe.probe") as local:
+            self.assertEqual(inspection.public_probe(spec,main.db,h["id"])[0],"unverified");local.assert_not_called()
+        self.assertIn(node["id"],inspection.probe_source(spec))
+
+    def test_rule_report_keeps_distinct_evidence_without_checking_other_rules(self):
+        h=self.host();s=self.req("post","services",{"host_id":h["id"],"name":"orders"})
+        scope={"host_id":h["id"],"service_id":s["id"]}
+        for rid in ("one","two"):
+            main.db.put("binding",{"id":"forward:"+rid,"remote_id":rid,"upstream_id":rid,"kind":"forward",**scope})
+        cfg={"id":"one","version":"v2","node_online":True,"client_online":False,"enabled":True,"applied":"pending",
+             "target_host":"192.0.2.2","target_port":8000,"public_port":18080}
+        with patch("backend.jobs.gateway",return_value={"data":cfg,"status":"observed"}) as gw,patch("backend.inspection.rule_target",return_value=inspection.item("target","ok","HTTP 200","内网 SSH")):
+            t=self.wait(self.req("post","tunnels/forward/check",{**scope,"id":"one"})["id"])
+        report=self.req("get","reports/"+t["result"]["report_id"])
+        self.assertEqual(report["rule_id"],"forward:one")
+        layers={i["name"].split(":")[-1]:i for i in report["items"]}
+        self.assertEqual([layers[k]["status"] for k in ("configuration","node_online","client_online","receipt","target","public")],
+                         ["ok","ok","abnormal","unverified","ok","unverified"])
+        self.assertTrue(all(call.args==("forward","check",{"id":"one"}) for call in gw.call_args_list))
+        self.assertEqual(main.db.all("monitor",host_id=h["id"]),[])
+
+    def test_deleted_rule_requires_exact_receipt_then_preserves_history(self):
+        h=self.host();s=self.req("post","services",{"host_id":h["id"],"name":"svc"})
+        scope={"host_id":h["id"],"service_id":s["id"]}
+        expected="2026-11-03T01:00:00.123456789Z"
+        seen=[]; rows={}; receipts={}
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                _,_,kind,action=self.path.split("/")
+                data=json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen.append((kind,action,data))
+                if self.headers.get("X-Control-Secret")!="t"*32:
+                    self.send_error(403);return
+                if action=="page":
+                    result={"list":rows[kind],"total":len(rows[kind])}
+                elif action=="delete" and data=={"code":"r"}:
+                    rows[kind]=[];result={}
+                elif action=="receipt" and data=={"code":"r","tag":expected}:
+                    result=receipts.get((kind,data["tag"]),{})
+                else:
+                    self.send_error(400);return
+                self.send_response(200);self.end_headers()
+                self.wfile.write(json.dumps({"code":0,"data":result}).encode())
+            def log_message(self,*args):pass
+        srv=ThreadingHTTPServer(("127.0.0.1",0),Handler);threading.Thread(target=srv.serve_forever,daemon=True).start()
+        try:
+            with patch.dict(os.environ,{"GOSTC_CONTROL_SECRET":"t"*32,"GOSTC_CONTROL_URL":"http://127.0.0.1:"+str(srv.server_port)}):
+                for kind in ("forward","p2p"):
+                    with self.subTest(kind=kind):
+                        rows[kind]=[{"code":"r","revision":expected,"name":"fixture","enable":1,"targetIp":"127.0.0.1","targetPort":"80","port":"18080"}]
+                        for rid in ("r","legacy"):
+                            main.db.put("binding",{"id":kind+":"+rid,"remote_id":rid,"upstream_id":rid,"kind":kind,
+                                                   "deleted":rid=="legacy","removed":{"id":rid},"status":"pending_revoke",**scope})
+                        task=self.req("post","tunnels/"+kind+"/delete",{"id":"r",**scope})
+                        self.req("post","tasks/"+task["id"]+"/confirm",{})
+                        self.assertEqual(self.wait(task["id"])["status"],"succeeded")
+                        self.assertEqual(main.db.get("binding",kind+":r")["revocation_tag"],expected)
+                        path="tunnels/"+kind+"?host_id="+h["id"]+"&service_id="+s["id"]
+                        receipt={"applied":"revoked","applied_at":"2026-11-03T01:00:01Z"}
+                        for key,value in [(None,None),("old-revision",receipt),(expected,{"applied":"revoked","applied_at":None})]:
+                            if key:receipts[kind,key]=value
+                            self.assertEqual({b["id"] for b in self.req("get",path)},{"r","legacy"})
+                        receipts[kind,expected]=receipt
+                        self.assertEqual([b["id"] for b in self.req("get",path)],["legacy"])
+                        self.assertEqual([b["id"] for b in self.req("get",path)],["legacy"])
+                        self.assertEqual([v for k,a,v in seen if k==kind and a=="receipt"],[{"code":"r","tag":expected}]*4)
+                        self.assertEqual(main.db.get("binding",kind+":r")["status"],"revoked")
+                        hist=self.req("get","tasks/"+task["id"])["result"]["revocation_receipt"]
+                        self.assertEqual((hist["revocation_tag"],hist["applied_at"]),(expected,receipt["applied_at"]))
+        finally:
+            srv.shutdown();srv.server_close()
 
     def test_bt_12_read_only_version_two_schemas_empty_and_unavailable(self):
         root=Path(self.temp.name)/"panel"

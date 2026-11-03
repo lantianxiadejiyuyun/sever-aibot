@@ -1,5 +1,6 @@
 import ipaddress
 import re
+import socket
 from urllib.parse import urlsplit
 from .store import error
 
@@ -61,7 +62,21 @@ def scope(db,host_id,service_id):
     return h,s
 
 
-def service_config(d):
+def separate_probe_host(node,target):
+    if node["id"]==target["id"] or node["address"].casefold()==target["address"].casefold():
+        return False
+    def ips(host):
+        rows=socket.getaddrinfo(host,None,type=socket.SOCK_STREAM)
+        values=[ipaddress.ip_address(r[4][0].split("%")[0]) for r in rows]
+        return {getattr(ip,"ipv4_mapped",None) or ip for ip in values}
+    try:
+        a,b=ips(node["address"]),ips(target["address"])
+        return bool(a and b and a.isdisjoint(b) and not any(ip.is_loopback or ip.is_unspecified or ip.is_multicast for ip in a))
+    except (ValueError,OSError):
+        return False
+
+
+def service_config(d,db=None,host_id=None):
     fields(d,"name directory compose_service config_path image_variable health_url ports public_probe")
     if "name" in d:
         d["name"]=string(d["name"])
@@ -84,7 +99,12 @@ def service_config(d):
             integer(p,1,65535)
     if d.get("public_probe"):
         p=d["public_probe"]
-        fields(p,"protocol host port path request expect")
+        fields(p,"protocol host port path request expect probe_host_id")
+        if p.get("probe_host_id"):
+            node=db.get("host",string(p["probe_host_id"],80))
+            h=db.get("host",host_id)
+            if not separate_probe_host(node,h):
+                error("外部探测节点必须独立于被管主机")
         hostaddr(p.get("host"));integer(p.get("port"),1,65535)
         if p.get("protocol") not in ("http","https","udp","tcp"):
             error("探测协议无效")

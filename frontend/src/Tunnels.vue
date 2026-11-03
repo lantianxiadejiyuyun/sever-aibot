@@ -102,6 +102,7 @@ function form(r = null) {
 async function action(a, r, data = {}) {
   if (a !== 'check' && s.mode !== 'change')
     throw Error('请先切换到允许确认变更模式。')
+  if (a !== 'create' && !r) throw Error('规则已变化，请刷新后重试。')
   if (rule.value && r?.service_id && s.service !== r.service_id)
     await changeTarget(s.host, r.service_id)
   await ensureChat()
@@ -114,13 +115,6 @@ async function action(a, r, data = {}) {
   })
   editing.value = false
   focusTask(t)
-}
-async function editRow(r) {
-  if (rule.value && r.service_id && s.service !== r.service_id) {
-    await changeTarget(s.host, r.service_id)
-    return
-  }
-  form(r)
 }
 async function ai(r) {
   if (r.service_id && r.service_id !== s.service)
@@ -294,7 +288,7 @@ function endpoint(arr, id) {
           <div class="row split">
             <h3>{{ r.data.name }}</h3>
             <span class="pill">{{
-              rule ? receipt(r.data) : r.data.online ? '在线' : '离线'
+              r.deleted ? label(r.status) : rule ? receipt(r.data) : r.data.online ? '在线' : '离线'
             }}</span>
           </div>
           <small class="hint"
@@ -314,7 +308,7 @@ function endpoint(arr, id) {
                 r.service_id
               }}
               · {{ kind === 'forward' ? 'TCP + UDP' : 'TCP / XTCP' }} ·
-              {{ r.data.enabled ? '配置启用' : '配置停用' }}</small
+              {{ r.deleted ? '已删除配置' : r.data.enabled ? '配置启用' : '配置停用' }}</small
             >
             <p v-if="kind === 'p2p'" class="hint">
               实际路径：{{
@@ -327,7 +321,8 @@ function endpoint(arr, id) {
               }}
               · {{ r.data.allow_relay ? '隧道允许中继' : '隧道禁止中继' }}
             </p>
-            <div class="sample-time">
+            <p v-if="r.deleted" class="hint">最后配置快照，尚未取得撤销回执。</p>
+            <div v-else class="sample-time">
               节点：{{ r.data.node_online ? '在线' : '离线' }} · 客户端：{{
                 r.data.client_online ? '在线' : '离线'
               }}<br />客户端回执：{{ label(r.data.applied) }} ·
@@ -339,7 +334,8 @@ function endpoint(arr, id) {
               {{ r.last_check?.evidence || '公网未验证' }}
             </div></template
           ><Evidence v-else :value="r.data" />
-          <div class="actions">
+          <div v-if="r.deleted" class="actions"><button v-if="r.task_id" class="small" @click="run('tasks', async () => focusTask(await api('/tasks/' + encodeURIComponent(r.task_id))))">查看撤销任务</button></div>
+          <div v-else class="actions">
             <button
               class="small"
               :disabled="s.busy.rule"
@@ -347,8 +343,8 @@ function endpoint(arr, id) {
             >
               检查</button
             ><template v-if="rule && s.mode === 'change'"
-              ><button class="small" @click="run('rule', () => editRow(r))">
-                {{ !s.service ? '选择服务' : '修改' }}</button
+              ><button class="small" @click="form(r)">
+                修改</button
               ><button
                 class="small"
                 :disabled="s.busy.rule"

@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import io
 import json
+import posixpath
 import re
 import shlex
 import socket
@@ -98,24 +99,35 @@ def live(tr, s):
     rc, cid = run(tr, compose_base(s) + " ps -q -- " + Q(s["compose_service"]))
     if rc or not re.fullmatch(r"[a-f0-9]{12,64}", cid):
         error("未找到唯一运行中的 Compose 服务，无法核对现场",409)
-    rc, raw = run(tr, "docker inspect --format " + Q('{{.Config.Image}}|{{.Image}}|{{.State.Running}}|{{json .NetworkSettings.Ports}}') + " " + cid)
-    parts = raw.split("|",3)
-    if rc or len(parts)!=4:
+    template='{{.Config.Image}}\n{{.Image}}\n{{.State.Running}}\n{{json .NetworkSettings.Ports}}\n{{json (index .Config.Labels "com.docker.compose.project.working_dir")}}\n{{json (index .Config.Labels "com.docker.compose.project.config_files")}}'
+    rc, raw = run(tr, "docker inspect --format " + Q(template) + " " + cid)
+    parts = raw.splitlines()
+    if rc or len(parts)!=6:
         error("读取部署现场失败",409)
     ports = json.loads(parts[3]) or {}
     return {"image":parts[0],"image_id":parts[1],"running":parts[2]=="true","container":cid,
+            "directory":json.loads(parts[4]) or None,"config_files":list(filter(None,(json.loads(parts[5]) or "").split(","))),
             "ports":sorted({int(bind["HostPort"]) for binds in ports.values() for bind in (binds or [])})}
 
 
-def deploy(tr, s, image, before, step):
+def target_command(s,image):
+    return "cd "+Q(s["directory"])+" && env "+s["image_variable"]+"="+Q(image)+" docker compose -f "+Q(s["config_path"])
+
+
+def target_hash(tr,s,image):
+    pick="import hashlib,json,sys;c=json.load(sys.stdin);s=c.pop('services')[sys.argv[1]];print(hashlib.sha256(json.dumps([c,s],sort_keys=True).encode()).hexdigest() if s.get('image')==sys.argv[2] else '')"
+    rc, value=run(tr,target_command(s,image)+" config --format json | /usr/bin/python3 -I -c "+Q(pick)+" "+Q(s["compose_service"])+" "+Q(image))
+    if rc or not re.fullmatch(r"[a-f0-9]{64}",value):
+        error("无法核实目标镜像与有效 Compose 配置",409)
+    return value
+
+
+def deploy(tr, s, image, before, step, config_hash):
     if live(tr,s) != before:
         error("部署现场已变化，需要重新预览",409)
-    base = compose_base(s)
-    prefix = base.replace(" && docker compose", " && env " + s["image_variable"] + "=" + Q(image) + " docker compose", 1)
-    pick_image = "import json,sys;print(json.load(sys.stdin)['services'][sys.argv[1]]['image'])"
-    rc, resolved = run(tr, prefix + " config --format json | python3 -c " + Q(pick_image) + " " + Q(s["compose_service"]))
-    if rc or resolved != image:
-        error("Compose 配置未将已登记的环境变量用于目标服务镜像，已停止")
+    prefix=target_command(s,image)
+    if target_hash(tr,s,image)!=config_hash:
+        error("Compose 配置已变化，需要重新预览",409)
     step("已复核现场与目标镜像；开始拉取")
     rc,_ = run(tr, prefix + " pull -- " + Q(s["compose_service"]), timeout=180)
     if rc:
@@ -130,6 +142,8 @@ def deploy(tr, s, image, before, step):
         rc, image_id = run(tr, "docker image inspect --format '{{.Id}}' -- " + Q(image))
         status, ev = health(tr,s["health_url"])
         if (not rc and image_id == current["image_id"] and current["image"] == image and current["running"]
+                and posixpath.normpath(s["directory"])==current.get("directory")
+                and posixpath.normpath(posixpath.join(s["directory"],s["config_path"])) in current.get("config_files",[])
                 and set(s["ports"]) <= set(current["ports"]) and status=="ok"):
             return {**current,"health":ev}
         time.sleep(1)

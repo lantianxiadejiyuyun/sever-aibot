@@ -252,8 +252,25 @@ export async function send() {
   if (!content) return
   if (!s.host || !s.model) throw Error('请先选择服务器和模型。')
   if (!s.chat) await newChat(content.slice(0, 28))
-  else if (chat.value?.model_id !== s.model)
-    await patchChat({ model_id: s.model })
+  else {
+    // The same conversation can change targets on another device.
+    const previous = chat.value
+    const chats = await api('/chats')
+    const current = chats.find((c) => c.id === s.chat)
+    s.chats = chats
+    if (!current) throw Error('此会话已删除，请新建会话后发送。')
+    if (
+      (current.host_id || '') !== s.host ||
+      (current.service_id || '') !== s.service ||
+      current.mode !== s.mode ||
+      current.generation !== previous?.generation ||
+      current.model_id !== previous?.model_id
+    ) {
+      await openChat(current)
+      throw Error('会话已在其他设备变更。已恢复最新目标和设置，本条消息未发送。')
+    }
+    if (current.model_id !== s.model) await patchChat({ model_id: s.model })
+  }
   const id = s.chat
   s.draft = ''
   s.reportRef = null

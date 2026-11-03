@@ -1,4 +1,5 @@
 import logging
+import posixpath
 import re
 import threading
 import time
@@ -63,8 +64,30 @@ class Jobs:
         rows=gateway(kind,"list",{})["data"]
         live=[{**bindings[str(r["id"])],"id":str(r["id"]),"data":r} for r in rows if str(r["id"]) in bindings]
         seen={r["id"] for r in live}
-        return live+[{**b,"id":key,"data":b["removed"]} for key,b in bindings.items()
-                     if b.get("deleted") and b.get("removed") and key not in seen and b["status"]=="pending_revoke"]
+        for key,b in bindings.items():
+            if (kind not in ("forward","p2p") or not b.get("deleted") or not b.get("removed")
+                    or key in seen or b["status"]!="pending_revoke"):
+                continue
+            tag=b.get("revocation_tag")
+            task=self.db.get("task",b.get("task_id"),False)
+            if tag and not (task and task["status"]=="running"):
+                try:
+                    response=gateway(kind,"receipt",{"id":b["upstream_id"],"revocation_tag":tag})
+                except HTTPException:
+                    response={}
+                receipt=response.get("data") or {}
+                if (response.get("status")=="revoked" and str(receipt.get("id"))==key and receipt.get("revocation_tag")==tag
+                        and receipt.get("applied")=="revoked" and receipt.get("applied_at")):
+                    with self.db.atomic():
+                        current=self.db.get("binding",b["id"])
+                        if current.get("deleted") and current.get("revocation_tag")==tag:
+                            self.db.put("binding",{**current,"status":"revoked","revocation_receipt":receipt,"updated_at":now()})
+                            if task:
+                                hist=self.db.get("task",task["id"])
+                                self.save(hist,result={**(hist.get("result") or {}),"revocation_receipt":receipt})
+                            continue
+            live.append({**b,"id":key,"data":b["removed"]})
+        return live
 
     def rule_guard(self,h,s,kind,action,rid,data):
         if kind not in KINDS or action not in (*CHANGES,"check"):
@@ -157,7 +180,19 @@ class Jobs:
                 error("请绑定独立部署账号")
             with sshops.connect(self.db,h) as tr:
                 before=sshops.live(tr,s)
+                config_hash=sshops.target_hash(tr,s,image)
+            verified=s.get("verified") or {}
+            drift={k:{"last_verified":verified[k],"observed":before.get(k)} for k in ("image","image_id","ports","directory")
+                   if k in verified and before.get(k) is not None and before[k]!=verified[k]}
+            if before.get("directory") and posixpath.normpath(s["directory"])!=before["directory"]:
+                drift["configured_directory"]={"configured":s["directory"],"observed":before["directory"]}
+            configured_file=posixpath.normpath(posixpath.join(s["directory"],s["config_path"]))
+            if before.get("config_files") and configured_file not in before["config_files"]:
+                drift["config_file"]={"configured":configured_file,"observed":before["config_files"]}
+            if set(s["ports"])-set(before["ports"]):
+                drift["configured_ports"]={"configured":s["ports"],"observed":before["ports"]}
             plan.update(before=before,after={"image":image},directory=s["directory"],compose_service=s["compose_service"],
+                        config_hash=config_hash,drift=drift,image_resolution="固定摘要" if re.search(r"@sha256:[0-9a-f]{64}$",image) else "标签可能变化；执行后核验实际拉取的镜像摘要",
                         ports=s["ports"],health_url=s["health_url"],last_verified=s.get("verified"),
                         impact="仅重建选定 Compose 服务，期间可能中断",
                         rollback="可另行预览上一镜像 "+before["image"]+"；未验证该镜像仍可拉取",
@@ -187,10 +222,17 @@ class Jobs:
         self.wake.set()
         return task
 
-    def guard(self,t):
+    def guard(self,t,confirming=False):
         h,s=scope(self.db,t["host_id"],t["service_id"])
         if self.targetversion(h,s)!=t["plan"]["target_version"] or self.ensure_chat(t["chat_id"],h["id"],t["service_id"],True)!=t["generation"]:
             error("目标已变化，需重新预览",409)
+        if t["kind"]=="deploy" and not t["plan"].get("config_hash"):
+            error("旧计划缺少 Compose 配置摘要，请重新预览",409)
+        if confirming and t["kind"]=="deploy":
+            p=t["plan"]
+            with sshops.connect(self.db,h) as tr:
+                if sshops.live(tr,s)!=p["before"] or sshops.target_hash(tr,s,p["after"]["image"])!=p["config_hash"]:
+                    error("部署现场或 Compose 配置已变化，请重新预览",409)
         if t["kind"] in KINDS:
             p=t["plan"]
             observed=self.rule_guard(h,s,t["kind"],t["action"],p["rule_id"],p["changes"])
@@ -204,7 +246,7 @@ class Jobs:
         if t["status"]!="awaiting_confirmation":
             return t
         try:
-            self.guard(t)
+            self.guard(t,confirming=True)
         except HTTPException as e:
             if e.status_code in (403,404,409):
                 with self.db.atomic():
@@ -220,7 +262,7 @@ class Jobs:
         self.wake.set()
         return t
 
-    def evidence(self,s):
+    def evidence(self,s,observed=None):
         items=[]
         for b in self.db.all("binding",service_id=s["id"]):
             if b.get("deleted") or b["kind"] not in ("forward","p2p"):
@@ -228,16 +270,40 @@ class Jobs:
             try:
                 res=gateway(b["kind"],"check",{"id":b["upstream_id"]})
                 e=res["data"]
-                items.append(inspection.item("gostc:"+b["id"],"unverified",{"configuration":e,"status":res.get("status"),
-                          "business":"配置和在线状态不能证明业务可用"},"gostc"))
+                items.extend(self.layers(s,b["kind"],e,b,observed))
             except HTTPException:
                 items.append(inspection.item("gostc:"+b["id"],"unverified","无法读取管理端证据","gostc"))
         return items
+
+    def layers(self,s,kind,cfg,b,observed=None):
+        prefix="gostc:"+b["id"]+":"
+        def row(name,status,ev,source):
+            return inspection.item(prefix+name,status,ev,source)
+        rows=[row("configuration","ok",{k:cfg.get(k) for k in ("id","version","enabled","node_id","client_id","target_host","target_port","public_port","allow_relay") if k in cfg},"gostc 管理端")]
+        for field in ("node_online","client_online"):
+            online=cfg.get(field)
+            rows.append(row(field,"ok" if online is True else "abnormal" if online is False else "unverified",online,"gostc 连接状态"))
+        applied=cfg.get("applied")
+        rows.append(row("receipt","ok" if applied in ("applied","revoked") and cfg.get("applied_at") else "unverified",
+                        {"status":applied,"time":cfg.get("applied_at"),"version":cfg.get("version")},"gostc 客户端回执"))
+        if kind=="p2p":
+            rows.append(row("path","unverified",cfg.get("path") or "unknown","P2P 建链证据"))
+        if cfg.get("target_host") and cfg.get("target_port"):
+            observation=inspection.rule_target(self.db,self.db.get("host",s["host_id"]),s,cfg)
+            rows.append({**observation,"name":prefix+"target"})
+        status,ev=inspection.mapping_probe(s,kind,cfg,self.db,observed)
+        if cfg.get("enabled") is False or b.get("deleted"):
+            status,ev=("abnormal","停用后仍有业务响应") if status=="ok" else ("unverified","撤销尚未验证："+ev)
+        rows.append(row("public",status,ev,inspection.probe_source(s.get("public_probe"))))
+        return rows
 
     def execute(self,t):
         h,s=scope(self.db,t["host_id"],t["service_id"])
         k,a,p=t["kind"],t["action"],t["plan"]
         def step(text):
+            if k=="deploy" and not t["steps"]:
+                s["state"]="待核实";s["expected"]={"image":p["after"]["image"],"task_id":t["id"]}
+                self.db.put("service",s)
             t["steps"].append({"time":now(),"text":text})
             self.save(t)
         if k=="inspection":
@@ -248,11 +314,9 @@ class Jobs:
                 error("缺少确认",403)
             self.guard(t)
         if k=="deploy":
-            s["state"]="待核实";s["expected"]={"image":p["after"]["image"],"task_id":t["id"]}
-            self.db.put("service",s)
             try:
                 with sshops.connect(self.db,h,"deploy") as tr:
-                    result=sshops.deploy(tr,s,p["after"]["image"],p["before"],step)
+                    result=sshops.deploy(tr,s,p["after"]["image"],p["before"],step,p["config_hash"])
                 fresh=self.db.get("service",s["id"])
                 if fresh!=s:
                     error("执行期间档案已更改；需重新核实",409)
@@ -276,24 +340,27 @@ class Jobs:
         b=self.db.get("binding",key,False) or {"id":key,"kind":k,"remote_id":str(rid),"upstream_id":rid,
               "host_id":h["id"],"service_id":s["id"] if s and k in ("forward","p2p") else None}
         if a!="check":
-            b.update(status=result["status"],deleted=a=="delete",expected=p["after"],task_id=t["id"],updated_at=now())
+            b.update(status=result["status"],deleted=a=="delete",expected=None if a=="delete" else
+                     {field:data[field] for field in (*KEYS[k].split(),"enabled","id","version") if field in data},task_id=t["id"],updated_at=now())
             if a=="delete":
                 b["removed"]=p["before"]
+                if k in ("forward","p2p"):
+                    b["revocation_tag"]=data.get("revocation_tag")
+                else:
+                    b["status"]=result["status"]="deleted"
             self.db.put("binding",b)
         if k in ("forward","p2p") and s:
             cfg=data if a!="delete" else p["before"]
-            if a=="delete" or (a=="enable" and not args["enabled"]):
-                status,ev=inspection.mapping_probe(s,k,cfg)
-                result["verification"]=inspection.item("public","abnormal" if status=="ok" else "unverified",
-                     "停用后仍有业务响应" if status=="ok" else "撤销尚未验证："+ev,"已登记公网入口")
-            else:
-                status,ev=inspection.mapping_probe(s,k,cfg)
-                result["verification"]=inspection.item("public",status,ev,"已登记规则入口；仅对应所测协议")
-                if "target_host" in cfg and "target_port" in cfg:
-                    result["target"]=inspection.rule_target(self.db,h,s,cfg)
+            layers=self.layers(s,k,cfg,b)
+            result["verification"]=layers[-1]
+            target=next((i for i in layers if i["name"].endswith(":target")),None)
+            if target:
+                result["target"]=target
             b["last_check"]=result["verification"]
+            if b["last_check"]["status"]=="ok":
+                b["last_verified"]={**b["last_check"],"version":cfg.get("version")}
             if a=="check":
-                r=inspection.inspect(self.db,h,s,"tunnel",self.evidence)
+                r=inspection.record_report(self.db,h["id"],s["id"],[s],"tunnel",layers,rule_id=b["id"])
                 result["report_id"]=r["id"]
         self.db.put("binding",b)
         return result

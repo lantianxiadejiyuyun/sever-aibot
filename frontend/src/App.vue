@@ -86,6 +86,17 @@ const prompts = [
   ],
   ['巡检解读', '解读当前服务器最近一次巡检的异常和未验证项。', ClipboardList],
 ]
+// Asset edits can change the SSH endpoint while keeping its host ID.
+const connectionKey = computed(() => {
+  const h = host.value
+  const jump = s.hosts.find((x) => x.id === h?.jump_host_id)
+  return JSON.stringify([h, jump].map((x) =>
+    x && [x.id, x.address, x.port, x.fingerprint, x.bindings]))
+})
+function showTasks() {
+  s.dialog = 'tasks'
+  run('tasks', syncTasks)
+}
 const pending = computed(() =>
   s.tasks.filter((t) =>
     ['awaiting_confirmation', 'running', 'queued'].includes(t.status),
@@ -299,7 +310,7 @@ watch(
             <component :is="phone ? Desktop : Smartphone" />{{
               phone ? '桌面视图' : '手机视图'
             }}</button
-          ><button class="plain task-link" @click="s.dialog = 'tasks'">
+          ><button class="plain task-link" @click="showTasks">
             <ListChecks />任务记录 <span>{{ pending.length }}</span>
           </button>
         </div>
@@ -453,7 +464,7 @@ watch(
             <p v-if="s.busy.send" class="hint">正在等待控制服务返回结果…</p>
           </div>
           <div v-if="pending.length" class="pending">
-            <button @click="s.dialog = 'tasks'">
+            <button @click="showTasks">
               <ListChecks />当前目标有 {{ pending.length }} 项待处理任务
               <ChevronRight />
             </button>
@@ -518,7 +529,7 @@ watch(
       <div class="inspector-top">
         <KeyRound /><span>连接管理</span><small>SSH</small>
       </div>
-      <Connection :key="s.host" />
+      <Connection :key="connectionKey" />
     </aside>
     <button v-if="phone" class="exit-phone" @click="toggleLayout">
       <Desktop />返回桌面视图

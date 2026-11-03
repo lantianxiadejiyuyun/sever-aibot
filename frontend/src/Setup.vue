@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { Server, SlidersHorizontal, Plus, Save, Play } from 'lucide-vue-next'
 import {
   s,
@@ -29,6 +29,9 @@ const tab = ref(props.section === 'hosts' ? 'host' : 'model'),
   interval = ref(0),
   test = ref(null),
   image = ref('')
+const probeHosts = computed(() => s.hosts.filter((h) =>
+  h.id !== s.host && h.address.toLowerCase() !== host.value?.address.toLowerCase(),
+))
 const hp = {
     name: '',
     address: '',
@@ -72,6 +75,7 @@ function edit(obj = null) {
     path: '/',
     request: '',
     expect: '',
+    probe_host_id: '',
     ...obj?.public_probe,
   }
   image.value = ''
@@ -96,10 +100,10 @@ async function save() {
     obj = await api(
       '/hosts' + (editing ? '/' + enc(editing) : ''),
       editing ? 'PATCH' : 'POST',
-      editing ? { ...other, jump_host_id: jump_host_id || null } : other,
+      { ...other, jump_host_id: jump_host_id || null },
     )
     await catalog()
-    if (!editing || editing === s.host) {
+    if (!editing) {
       await changeTarget(obj.id)
       s.mobile = 'desk'
     }
@@ -241,11 +245,11 @@ async function deploy() {
             max="65535"
             required /></label
         ><label>环境<input v-model="f.environment" required /></label
-        ><label v-if="id"
+        ><label
           >跳板主机<select v-model="f.jump_host_id">
             <option value="">直连</option>
             <option
-              v-for="h in s.hosts.filter((x) => x.id !== id)"
+              v-for="h in s.hosts.filter((x) => x.id !== id && !x.jump_host_id)"
               :value="h.id"
             >
               {{ h.name }}
@@ -316,7 +320,8 @@ async function deploy() {
           ><label v-if="['http', 'https'].includes(pf.protocol)"
             >路径<input v-model="pf.path" required /></label
           ><label v-else>请求报文<input v-model="pf.request" /></label
-          ><label>预期响应内容<input v-model="pf.expect" /></label></template
+          ><label>预期响应内容<input v-model="pf.expect" /></label>
+          <label>外部探测位置<select v-model="pf.probe_host_id"><option value="">控制端（需启用外部探测）</option><option v-for="h in probeHosts" :key="h.id" :value="h.id">{{ h.name }}</option></select></label></template
       ></template>
       <div class="actions span2">
         <button

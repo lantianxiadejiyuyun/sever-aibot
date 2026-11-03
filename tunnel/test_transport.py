@@ -138,11 +138,14 @@ def main():
         print("authenticated visitor delivered target service response",flush=True)
         gate.call("node","update",{"id":node,"disable_relay":True})
         assert b"_p2pstcp" not in visitor()
-        gate.call("forward","delete",{"id":rule})
+        removed = gate.call("forward","delete",{"id":rule})["data"]
         poll(closed)
-        gate.call("p2p","delete",{"id":peer})
+        poll(lambda: gate.call("forward", "receipt", removed)["status"] == "revoked")
+        assert gate.call("forward", "receipt", {**removed, "revocation_tag": "2000-01-01T00:00:00Z"})["status"] == "pending_revoke"
+        removed_peer = gate.call("p2p","delete",{"id":peer})["data"]
+        poll(lambda: gate.call("p2p", "receipt", removed_peer)["status"] == "revoked")
         assert not gate.call("forward","list")["data"] and not gate.call("p2p","list")["data"]
-        print("edit/stop/start/delete verified; P2P configuration and relay gates verified (not cross-NAT connectivity)", flush=True)
+        print("edit/stop/start/delete and matching revocation receipts verified; P2P configuration and relay gates verified (not cross-NAT connectivity)", flush=True)
 
 
 if __name__ == "__main__":

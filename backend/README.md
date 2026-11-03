@@ -5,7 +5,7 @@
 
 控制服务需要 AIBOT_ADMIN_PASSWORD（至少 12 字符）、AIBOT_MASTER_KEY（Fernet 密钥）和可写 AIBOT_DB（默认 var/aibot.sqlite3）。管理员在部署环境的受限凭据文件或服务密钥库中配置，勿写入仓库；备份主密钥与数据库时分开保管。生成主密钥可用 Python 的 cryptography.fernet.Fernet.generate_key()。主密钥丢失将无法恢复凭据。反代应保留 Host，通过 HTTPS 暴露 /api。会话 cookie 默认要求 HTTPS；仅本机 HTTP 开发可设 AIBOT_COOKIE_SECURE=0。启动不扫描或自动导入任何 SSH 文件。不要把进程环境、认证请求或响应体写入代理日志。
 
-管理端与 gostc 配置相同的 GOSTC_CONTROL_SECRET，其他设置见 tunnel/README.md。节点、客户端、访客的接入密钥在管理机器通过 tunnel.enroll 领取，不在任务、聊天或报告中展示。每个节点和客户端关联创建时选择的平台主机，规则另关联服务。已保存/待应用、已验证分开。规则变更后只有外部探测节点处于外部网络且设置 AIBOT_EXTERNAL_PROBE=1 才探测服务登记的公网入口；可设 AIBOT_PROBE_NAME 标明位置。仅本次业务响应匹配能作为业务证据。
+管理端与 gostc 配置相同的 GOSTC_CONTROL_SECRET，其他设置见 tunnel/README.md。节点、客户端、访客的接入密钥在管理机器通过 tunnel.enroll 领取，不在任务、聊天或报告中展示。每个节点和客户端关联创建时选择的平台主机，规则另关联服务。已保存/待应用、已验证分开。公网检查只探测服务预先登记的入口。若控制端本身位于外部网络，可设置 AIBOT_EXTERNAL_PROBE=1，并用 AIBOT_PROBE_NAME 标明位置。否则先把独立外部节点登记为 SSH 主机、固定主机指纹并绑定巡检账号，再将其 ID 写入服务的 public_probe.probe_host_id；该账号只需能运行 /usr/bin/python3。控制端校验两台 SSH 主机的地址不重合，外部节点自行解析入口且只连接公网地址。外部网络的位置由管理员确认，节点不可用不回退到控制端。仅本次业务响应匹配能作为业务证据。
 
 巡检和部署须在目标机建立独立的非 root 账号、独立密钥和最小远程权限；管理端拒绝账号/密钥混用。巡检通过预定义 Linux 命令，部署仅支持 Docker Compose v2：使用既有配置的服务，image 从已登记镜像变量读取，例如 image: ${APP_IMAGE}，目录、配置路径、镜像变量、HTTP(S) 健康检查须提前登记。通过 compose config 在执行前验证变量实际生成目标镜像；只 pull/up 指定服务。成功后持久化运行镜像/摘要/宿主端口与健康证据。部署不改远程 compose.yaml 或 .env，外部自动部署工具需自行同步镜像变量。回退须用另一个明确确认的任务；不会自动把未知状态标成成功。模型仅能调用固定工具，不能传入命令。模型设置中填写兼容 API 的基础路径（例如 https://provider.example/v1），服务端追加 /chat/completions；远程地址须 HTTPS，仅允许本机接口使用 HTTP。
 

@@ -69,14 +69,15 @@ async function trust() {
     fingerprint: fp.value.fingerprint,
   })
   await catalog()
-  await probe()
   changed('主机指纹已固定。')
 }
 async function testConn() {
   test.value = null
-  test.value = await api('/hosts/' + enc(s.host) + '/test', 'POST', {
-    purpose: purpose.value,
+  const selected = purpose.value
+  const result = await api('/hosts/' + enc(s.host) + '/test', 'POST', {
+    purpose: selected,
   })
+  if (selected === purpose.value) test.value = result
 }
 async function disable() {
   await api('/credentials/' + enc(disableId.value) + '/disable', 'POST', {})
@@ -185,7 +186,7 @@ async function disable() {
           >连接用途<select
             v-model="purpose"
             @change="
-              cred = ''; test = null
+              cred = ''; user = ''; test = null
             "
           >
             <option value="inspect">只读巡检</option>

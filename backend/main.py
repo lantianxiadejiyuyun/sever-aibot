@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from . import sshops, push
 from .controller import Controller, completion, context
-from .domain import fields, hostaddr, integer, purpose, scope, service_config, string, url
+from .domain import fields, hostaddr, integer, purpose, redact, scope, service_config, string, url
 from .jobs import Jobs
 from .store import Store, error, now
 
@@ -251,7 +251,7 @@ def services(host_id:str|None=None):
 def add_service(d:dict):
     hid=d.pop("host_id",None);db.get("host",hid)
     cfg=service_config({"name":"","ports":[],"directory":"","config_path":"compose.yaml","compose_service":"",
-                        "image_variable":"IMAGE","health_url":"","public_probe":None,**d})
+                        "image_variable":"IMAGE","health_url":"","public_probe":None,**d},db,hid)
     return db.new("service",host_id=hid,**cfg,state="unverified",expected=None,verified=None)
 
 
@@ -261,7 +261,7 @@ def edit_service(key:str,d:dict):
         s=db.get("service",key)
         if db.all("task",service_id=key,status="running"):
             error("任务执行中，请稍后修改服务档案",409)
-        return db.put("service",{**s,**service_config(d),"state":"待核实"})
+        return db.put("service",{**s,**service_config(d,db,s["host_id"]),"state":"待核实"})
 
 
 @api.get("/monitor")
@@ -403,9 +403,10 @@ def model_test(key:str):
 
 
 def chat_config(d,old=None):
-    fields(d,"title host_id service_id model_id mode exclude_sources")
+    fields(d,"title host_id service_id model_id mode exclude_sources constraints")
     c={**(old or {"host_id":None,"service_id":None,"model_id":None,"title":"新会话","mode":"inspect","exclude_sources":[],"generation":0}),**d}
     c["title"]=string(c["title"])
+    c["constraints"]=redact(string(c["constraints"],512)) if c.get("constraints") else ""
     if c["mode"] not in ("inspect","change") or not isinstance(c["exclude_sources"],list) or any(x not in ("history","report") for x in c["exclude_sources"]):
         error("会话设置无效")
     if c.get("host_id") or c.get("service_id"):
@@ -413,8 +414,12 @@ def chat_config(d,old=None):
     if c.get("model_id"):
         db.get("model",c["model_id"])
     with db.atomic():
-        if old and (any(c[k]!=old[k] for k in ("host_id","service_id")) or (old["mode"]=="change" and c["mode"]=="inspect")):
+        target_changed=old and any(c[k]!=old[k] for k in ("host_id","service_id"))
+        c.setdefault("history_generation",c["generation"])
+        if old and (target_changed or c["constraints"]!=old.get("constraints","") or (old["mode"]=="change" and c["mode"]=="inspect")):
             c["generation"]+=1
+            if target_changed:
+                c["history_generation"]=c["generation"]
             invalidate(old["id"])
         return db.put("chat",c) if old else db.new("chat",**c)
 

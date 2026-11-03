@@ -25,3 +25,4 @@ public_probe 可配置 {protocol:"tcp"或"udp"或"http"或"https",host,port,path
 
 运行：见 backend/README.md。代理 /api 到单 worker uvicorn，浏览器通过 HTTPS 访问。
 Web Push（手机 PWA 关闭后）：GET /push/key 返回 {enabled,public_key,reason}，public_key 为无填充 Base64URL 编码的 VAPID P-256 公钥，未启用为 null。POST /push/subscriptions 接收 PushSubscription.toJSON() 结构 {endpoint,expirationTime?,keys:{p256dh,auth}}；DELETE 同路径提交 {endpoint}，仅影响当前订阅。成功均返回 {subscribed:true|false}。同样需要管理员会话和 CSRF。通知 payload 为 {id,title,body,url:"/",tag,host_id,service_id,report_id}，点击打开同源面板；不含原始报告、凭据或订阅地址。服务端设置 AIBOT_VAPID_SUBJECT=mailto:管理员地址（或 HTTPS 联系地址）启用，未设置时仅保留平台通知列表。
+联调补充：public_probe 可带 probe_host_id（已登记的独立外部 SSH 巡检主机 ID），设置后由该节点探测；不填延续控制端 AIBOT_EXTERNAL_PROBE 开关。POST/PATCH /chats 可带 constraints（最多 512 字的会话固定约束，默认空）；GET context 返回 constraints 与现有 mode，切换目标不携带旧主机证据，修改约束会使旧待确认计划失效。constraints 为补充说明，实际写权限始终由 mode 和具体任务确认决定。

@@ -86,11 +86,23 @@ class Gateway:
         key = str(data.get("id") or data.get("code") or identity or "")
         if action == "list":
             return {"status": "observed", "data": [self._public(kind, r) for r in self._rows(kind)]}
+        if action == "receipt":
+            tag = data.get("revocation_tag")
+            if kind not in ("forward", "p2p") or not key or not isinstance(tag, str) or not tag:
+                raise RuntimeError("撤销回执需要规则编号与删除时的版本")
+            receipt = self._post(kind, "receipt", {"code": key, "tag": tag}) or {}
+            revoked = receipt.get("applied") == "revoked" and bool(receipt.get("applied_at"))
+            return {"status": "revoked" if revoked else "pending_revoke",
+                    "data": {"id": key, "revocation_tag": tag,
+                             "applied": "revoked" if revoked else "pending",
+                             "applied_at": receipt.get("applied_at") if revoked else None}}
         prev = {}
+        raw = {}
         if action != "create":
             if not key:
                 raise RuntimeError("缺少规则编号")
-            prev = self._public(kind, self._find(kind, key))
+            raw = self._find(kind, key)
+            prev = self._public(kind, raw)
             if action == "check":
                 return {"data": prev, "status": "observed"}
             if data.get("version") and data["version"] != prev["version"]:
@@ -148,7 +160,10 @@ class Gateway:
                 raise RuntimeError("仍有隧道引用此对象")
         self._post(kind, action, wire)
         if action == "delete":
-            return {"status": "pending_revoke", "data": {"id": key}}
+            removed = {"id": key}
+            if kind in ("forward", "p2p"):
+                removed["revocation_tag"] = raw.get("revision")
+            return {"status": "pending_revoke", "data": removed}
         obj = self._public(kind, self._find(kind, key))
         return {"status": "pending_apply" if kind in ("p2p", "forward") else "saved", "data": obj}
 

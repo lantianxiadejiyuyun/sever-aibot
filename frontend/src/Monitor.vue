@@ -93,12 +93,21 @@ const names = {
 const nm = (k) =>
   names[k] ||
   (k?.includes(':')
-    ? ({ public: '公网入口', health: '应用健康' }[k.split(':')[0]] ||
+    ? ({ public: '公网入口', health: '应用健康', bt_target: '宝塔转发目标' }[k.split(':')[0]] ||
         k.split(':')[0]) +
       ' · ' +
       (s.services.find((a) => a.id === k.split(':')[1])?.name ||
         k.split(':')[1])
     : k)
+function itemService(item) {
+  return /^(health|public|bt_target):(.+)$/.exec(item.name)?.[2]
+}
+function inScope(report, item) {
+  if (!s.service || report.service_id) return true
+  const id = itemService(item)
+  // Aggregate gostc evidence refers to a rule ID, not its owning service.
+  return id ? id === s.service : !item.name.startsWith('gostc:')
+}
 const trigger = (t) =>
   ({ manual: '手动巡检', scheduled: '定时巡检', deployment: '部署后巡检' })[
     t
@@ -163,8 +172,10 @@ async function inspect() {
 }
 async function reportAI(item) {
   const report = rep.value
-  if (report.service_id && report.service_id !== s.service)
-    await changeTarget(s.host, report.service_id)
+  const target = itemService(item) || report.service_id || s.service
+  if (report.host_id !== s.host || !inScope(report, item))
+    throw Error('当前目标已变化，请重新选择报告。')
+  if (target !== s.service) await changeTarget(report.host_id, target)
   handoff(
     '请分析巡检报告 ' +
       report.id +
@@ -288,7 +299,7 @@ async function reportAI(item) {
           </details>
           <details
             v-for="a in recent?.items.filter((x) =>
-              /^(ssh|health:|public:|bt_rules|gostc)/.test(x.name),
+              inScope(recent, x) && /^(ssh|health:|public:|bt_rules|bt_target:|gostc)/.test(x.name),
             )"
           >
             <summary>
@@ -324,12 +335,12 @@ async function reportAI(item) {
                 </option>
               </select></label
             ><template v-if="rep"
-              ><p class="hint">报告编号 {{ rep.id }}</p>
+              ><p class="hint">报告编号 {{ rep.id }}<template v-if="!rep.service_id && s.service"> · 整机报告，仅列出主机级及可归属到当前服务的项目。</template></p>
               <details>
                 <summary>
-                  与上次相比 · {{ rep.changes?.length || 0 }} 项变化
+                  与上次相比 · {{ rep.changes?.filter((x) => inScope(rep, x)).length || 0 }} 项变化
                 </summary>
-                <Evidence :value="rep.changes" />
+                <Evidence :value="rep.changes?.filter((x) => inScope(rep, x))" />
               </details>
               <div class="segmented">
                 <button
@@ -348,7 +359,7 @@ async function reportAI(item) {
               <article
                 class="report-item"
                 v-for="a in rep.items.filter(
-                  (x) => filter === 'all' || x.status === filter,
+                  (x) => inScope(rep, x) && (filter === 'all' || x.status === filter),
                 )"
               >
                 <div class="row split">

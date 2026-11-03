@@ -1,12 +1,11 @@
-import http.client
-import ipaddress
+from pathlib import Path
 import os
 import re
 import json
 import shlex
-import socket
-import ssl
+from . import public_probe as public_probe_module
 from . import sshops, push
+from .domain import separate_probe_host
 from .store import now, digest
 
 # aaPanel firewallModel/comModel.py: set_forward_db stores these four columns in
@@ -83,48 +82,35 @@ COMMANDS = {
 }
 
 
-def public_probe(spec):
-    if not spec or os.getenv("AIBOT_EXTERNAL_PROBE") != "1":
-        return "unverified","公网未验证：未登记入口或未配置外部探测位置"
-    host, port, proto = spec["host"], spec["port"], spec["protocol"]
-    try:
-        typ = socket.SOCK_DGRAM if proto == "udp" else socket.SOCK_STREAM
-        entries = socket.getaddrinfo(host, port, type=typ)
-        if not entries or any(not ipaddress.ip_address(x[4][0]).is_global or ipaddress.ip_address(x[4][0]).is_multicast for x in entries):
-            return "unverified","外部探测只允许登记的公网地址"
-        af,typ,p,_,addr = entries[0]
-        with socket.socket(af,typ,p) as conn:
-            conn.settimeout(5)
-            conn.connect(addr)
-            if proto in ("https","http"):
-                sock = ssl.create_default_context().wrap_socket(conn,server_hostname=host) if proto=="https" else conn
-                try:
-                    authority = ("["+host+"]" if ":" in host else host)+":"+str(port)
-                    sock.sendall(("GET "+spec.get("path","/")+" HTTP/1.1\r\nHost: "+authority+"\r\nConnection: close\r\n\r\n").encode("ascii"))
-                    res = http.client.HTTPResponse(sock)
-                    res.begin()
-                    body = res.read(65536)
-                    if 200 <= res.status < 300 and not spec.get("expect"):
-                        return "unverified","HTTP "+str(res.status)+"；未登记预期业务响应特征"
-                    ok = 200 <= res.status < 300 and spec.get("expect","").encode() in body
-                    return ("ok" if ok else "abnormal"), "业务响应 "+str(res.status)+(" 匹配" if ok else " 不匹配")
-                finally:
-                    if sock is not conn:
-                        sock.close()
-            if not spec.get("expect") or not spec.get("request"):
-                return "unverified", "TCP 握手成功；未验证业务响应" if proto=="tcp" else "UDP 未登记请求及预期响应"
-            conn.sendall(spec["request"].encode())
-            expect = spec["expect"].encode()
-            buf = conn.recv(65536)
-            while proto=="tcp" and buf and expect not in buf and len(buf)<65536:
-                chunk=conn.recv(4096)
-                if not chunk:
-                    break
-                buf+=chunk
-            ok = expect in buf
-            return ("ok" if ok else "abnormal"), proto.upper()+(" 业务响应匹配" if ok else " 业务响应不匹配")
-    except (OSError,ValueError,http.client.HTTPException):
-        return ("unverified" if proto=="udp" else "abnormal"), proto.upper()+" 未收到预期响应"
+def probe_source(spec):
+    node=(spec or {}).get("probe_host_id")
+    return "外部 SSH 探测节点 "+node if node else os.getenv("AIBOT_PROBE_NAME","控制端外部探测")
+
+
+def public_probe(spec,db=None,target_host_id=None):
+    if not spec:
+        return "unverified","公网未验证：未登记入口"
+    node=spec.get("probe_host_id")
+    if node:
+        if db is None or node==target_host_id:
+            return "unverified","公网未验证：缺少独立的外部节点"
+        try:
+            remote=db.get("host",node)
+            if not separate_probe_host(remote,db.get("host",target_host_id)):
+                return "unverified","公网未验证：节点地址无法确认独立于被管主机"
+            code=Path(public_probe_module.__file__).read_text(encoding="utf-8")
+            args={k:v for k,v in spec.items() if k!="probe_host_id"}
+            with sshops.connect(db,remote,"inspect") as tr:
+                rc,out=sshops.run(tr,"/usr/bin/python3 -I -c "+shlex.quote(code)+" "+shlex.quote(json.dumps(args)),timeout=12,limit=2048)
+            result=json.loads(out) if not rc else None
+            if isinstance(result,list) and len(result)==2 and result[0] in ("ok","abnormal","unverified") and isinstance(result[1],str):
+                return tuple(result)
+        except Exception:
+            pass
+        return "unverified","公网未验证：未能从已登记的外部节点取得结果"
+    if os.getenv("AIBOT_EXTERNAL_PROBE")!="1":
+        return "unverified","公网未验证：未配置外部探测位置"
+    return public_probe_module.probe(spec)
 
 
 def item(name, status, evidence, source):
@@ -173,13 +159,13 @@ def rule_target(db,host,s,config):
     return item("target",status,ev,"已绑定主机 SSH")
 
 
-def mapping_probe(service,kind,config):
+def mapping_probe(service,kind,config,db=None,observed=None):
     p=service.get("public_probe")
     # A different service endpoint, or a P2P visitor, does not verify this rule.
     host=(config.get("public_host") or "").rpartition(":")[0].lower()
     if kind!="forward" or not p or p["port"]!=config.get("public_port") or p["host"].lower()!=host:
         return "unverified","未登记与此规则公网节点地址和端口匹配的外部探测"
-    return public_probe(p)
+    return observed or public_probe(p,db,service.get('host_id'))
 
 
 def inspect(db, host, service=None, trigger="manual", gateway_evidence=None):
@@ -267,18 +253,23 @@ def inspect(db, host, service=None, trigger="manual", gateway_evidence=None):
     for s in targets:
         if not any(i["name"]=="health:"+s["id"] for i in items):
             items.append(item("health:"+s["id"],"unverified","没有本次目标响应证据","被管主机"))
-        status, ev = public_probe(s.get("public_probe"))
-        items.append(item("public:"+s["id"],status,ev,os.getenv("AIBOT_PROBE_NAME","控制端外部探测")))
+        status, ev = public_probe(s.get("public_probe"),db,host_id)
+        items.append(item("public:"+s["id"],status,ev,probe_source(s.get("public_probe"))))
         if gateway_evidence:
-            items.extend(gateway_evidence(s))
-    previous=next((r for r in db.all("report",host_id=host_id, service_id=service_id)
-                   if (r["trigger"]=="deployment")==(trigger=="deployment")),None)
+            items.extend(gateway_evidence(s,(status,ev)))
+    return record_report(db,host_id,service_id,targets,trigger,items,metrics)
+
+
+def record_report(db,host_id,service_id,targets,trigger,items,metrics=None,rule_id=None):
+    previous=next((r for r in db.all("report",host_id=host_id,service_id=service_id)
+                   if (r["trigger"]=="deployment")==(trigger=="deployment") and r.get("rule_id")==rule_id
+                   and (r["trigger"]=="tunnel")==(trigger=="tunnel")),None)
     old={i["name"]:i["status"] for i in (previous or {}).get("items",[])}
     changes=[{"name":i["name"],"before":old.get(i["name"]),"after":i["status"]} for i in items if old.get(i["name"])!=i["status"]]
     with db.atomic():
         report=db.new("report",host_id=host_id,service_id=service_id,trigger=trigger,items=items,changes=changes,
-                      scope=[s["id"] for s in targets],suggestion="复查异常及未验证项的证据来源")
-        if trigger!="deployment":
+                      rule_id=rule_id,scope=[s["id"] for s in targets],suggestion="复查异常及未验证项的证据来源")
+        if metrics is not None and trigger!="deployment":
             stale=any(i["name"]=="ssh" and i["status"]!="ok" for i in items)
             last=db.all("monitor",host_id=host_id)[:1]
             db.new("monitor",host_id=host_id,metrics=(last[0]["metrics"] if stale and last else metrics),

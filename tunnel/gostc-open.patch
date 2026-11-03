@@ -345,10 +345,10 @@ index 9690d02..72b15f6 100644
  	g.Any("visitorP2P", frp.VisitorP2P)
  }
 diff --git a/server/router/router.go b/server/router/router.go
-index af65197..1e0b3c9 100644
+index af65197..e7d39ec 100644
 --- a/server/router/router.go
 +++ b/server/router/router.go
-@@ -1,88 +1,50 @@
+@@ -1,88 +1,72 @@
  package router
  
  import (
@@ -373,13 +373,34 @@ index af65197..1e0b3c9 100644
  	"server/router/public"
  	"server/router/rpc"
 -	"strings"
++	"server/service/engine"
++	"time"
  )
  
- func init() {
+-func init() {
 -	bootstrap.Route = func(engine *gin.Engine) {
 -		// 使用GZIP压缩数据
 -		engine.Use(gzip.Gzip(gzip.DefaultCompression))
--
++func revocationReceipt(c *gin.Context) {
++	var req struct {
++		Code string `json:"code" binding:"required,max=64"`
++		Tag  string `json:"tag" binding:"required,max=64"`
++	}
++	if c.ShouldBindJSON(&req) != nil {
++		c.JSON(400, gin.H{"code": 1, "msg": "invalid receipt request"})
++		return
++	}
++	if _, err := time.Parse(time.RFC3339Nano, req.Tag); err != nil {
++		c.JSON(400, gin.H{"code": 1, "msg": "invalid revision"})
++		return
++	}
++	state, at := engine.Receipt(req.Code, req.Tag)
++	if state != "revoked" {
++		state, at = "pending", ""
++	}
++	c.JSON(200, gin.H{"code": 0, "data": gin.H{"applied": state, "applied_at": at}})
++}
+ 
 -		// 记录HTTP请求日志
 -		httpLog := logger.NewLogger(logger.Option{
 -			To:         []string{global.BASE_PATH + "/data/httpLog/access.log"},
@@ -388,6 +409,7 @@ index af65197..1e0b3c9 100644
 -			MaxAge:     30,
 -			MaxBackups: 10,
 -			Compress:   true,
++func init() {
 +	bootstrap.Route = func(e *gin.Engine) {
 +		secret := os.Getenv("GOSTC_CONTROL_SECRET")
 +		if len(secret) < 32 {
@@ -451,8 +473,8 @@ index af65197..1e0b3c9 100644
 +		handlers := map[string]map[string]gin.HandlerFunc{
 +			"node":    {"page": nodes.Page, "create": nodes.Create, "update": nodes.Update, "delete": nodes.Delete},
 +			"client":  {"page": clients.Page, "create": clients.Create, "update": clients.Update, "delete": clients.Delete},
-+			"forward": {"page": forwards.Page, "create": forwards.Create, "update": forwards.Update, "enable": forwards.Enable, "delete": forwards.Delete},
-+			"p2p":     {"page": peers.Page, "create": peers.Create, "update": peers.Update, "enable": peers.Enable, "delete": peers.Delete},
++			"forward": {"page": forwards.Page, "create": forwards.Create, "update": forwards.Update, "enable": forwards.Enable, "delete": forwards.Delete, "receipt": revocationReceipt},
++			"p2p":     {"page": peers.Page, "create": peers.Create, "update": peers.Update, "enable": peers.Enable, "delete": peers.Delete, "receipt": revocationReceipt},
 +		}
 +		for kind, actions := range handlers {
 +			for action, h := range actions {
@@ -596,10 +618,10 @@ index 07b2573..c721afc 100644
  		Remark:             req.Remark,
 diff --git a/server/service/engine/ack.go b/server/service/engine/ack.go
 new file mode 100644
-index 0000000..d26490a
+index 0000000..603895a
 --- /dev/null
 +++ b/server/service/engine/ack.go
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,31 @@
 +package engine
 +
 +import (
@@ -623,7 +645,11 @@ index 0000000..d26490a
 +	}
 +	r := v.(receipt)
 +	if r.Tag != tag {
-+		return "pending", ""
++		observed, observedErr := time.Parse(time.RFC3339Nano, r.Tag)
++		requested, requestedErr := time.Parse(time.RFC3339Nano, tag)
++		if observedErr != nil || requestedErr != nil || !observed.Equal(requested) {
++			return "pending", ""
++		}
 +	}
 +	return r.Action, r.At.Format(time.RFC3339Nano)
 +}
