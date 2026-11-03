@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "端序 · 服务器运维工作台",
+  "short_name": "端序",
+  "description": "服务器、会话与运维任务",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5f5ef",
+  "theme_color": "#1b2425",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

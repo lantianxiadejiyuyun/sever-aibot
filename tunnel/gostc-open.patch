@@ -1,0 +1,1274 @@
+diff --git a/client/aiagent/main.go b/client/aiagent/main.go
+new file mode 100644
+index 0000000..9e0ae69
+--- /dev/null
++++ b/client/aiagent/main.go
+@@ -0,0 +1,76 @@
++package main
++
++import (
++	"flag"
++	"fmt"
++	"gostc-sub/internal/service"
++	visitor "gostc-sub/internal/service/visitor"
++	"net"
++	"os"
++	"os/signal"
++	"strconv"
++	"syscall"
++)
++
++type address struct {
++	host   string
++	secure bool
++}
++
++func (a address) WsUrl() string {
++	if a.secure {
++		return "wss://" + a.host
++	}
++	return "ws://" + a.host
++}
++func (a address) HttpUrl() string {
++	if a.secure {
++		return "https://" + a.host
++	}
++	return "http://" + a.host
++}
++func main() {
++	role := flag.String("role", "client", "node, client, or visitor")
++	addr := flag.String("addr", "127.0.0.1:18081", "control host:port")
++	tls := flag.Bool("tls", true, "use TLS (plaintext only on loopback)")
++	port := flag.Int("port", 9000, "local visitor port")
++	flag.Parse()
++	host, sp, err := net.SplitHostPort(*addr)
++	pn, e := strconv.Atoi(sp)
++	if err != nil || e != nil || host == "" || pn < 1 || pn > 65535 || (!*tls && !(net.ParseIP(host).IsLoopback() || host == "localhost")) {
++		fmt.Fprintln(os.Stderr, "invalid address or unsafe plaintext connection")
++		os.Exit(2)
++	}
++	key := os.Getenv("GOSTC_AGENT_KEY")
++	if key == "" {
++		fmt.Fprintln(os.Stderr, "set GOSTC_AGENT_KEY")
++		os.Exit(2)
++	}
++	a := address{*addr, *tls}
++	var svc interface {
++		Start() error
++		Stop()
++	}
++	switch *role {
++	case "node":
++		svc = service.NewNode(a, key, "")
++	case "client":
++		svc = service.NewClient(a, key)
++	case "visitor":
++		if *port < 1 || *port > 65535 {
++			os.Exit(2)
++		}
++		svc = visitor.NewP2P(a, key, "127.0.0.1", *port)
++	default:
++		fmt.Fprintln(os.Stderr, "unknown role")
++		os.Exit(2)
++	}
++	if err := svc.Start(); err != nil {
++		fmt.Fprintln(os.Stderr, "cannot start; verify registration and connection")
++		os.Exit(1)
++	}
++	stop := make(chan os.Signal, 1)
++	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
++	<-stop
++	svc.Stop()
++}
+diff --git a/client/internal/service/event/forward.go b/client/internal/service/event/forward.go
+index 48525fa..fa179e7 100644
+--- a/client/internal/service/event/forward.go
++++ b/client/internal/service/event/forward.go
+@@ -17,6 +17,8 @@ func ForwardHandle(client *arpc.Client, callback func(key, updateTag string), ch
+ 			return
+ 		}
+ 
++		unlock := lockRule(req.Key)
++		defer unlock()
+ 		if !checkUpdate(req.Key, req.UpdateTag) {
+ 			_ = c.Write("success")
+ 			return
+diff --git a/client/internal/service/event/p2p.go b/client/internal/service/event/p2p.go
+index 93df895..519780f 100644
+--- a/client/internal/service/event/p2p.go
++++ b/client/internal/service/event/p2p.go
+@@ -17,6 +17,8 @@ func P2PHandle(client *arpc.Client, callback func(key, updateTag string), checkU
+ 			return
+ 		}
+ 
++		unlock := lockRule(req.Key)
++		defer unlock()
+ 		if !checkUpdate(req.Key, req.UpdateTag) {
+ 			_ = c.Write("success")
+ 			return
+diff --git a/client/internal/service/event/remove.go b/client/internal/service/event/remove.go
+index 0a9c759..9eec133 100644
+--- a/client/internal/service/event/remove.go
++++ b/client/internal/service/event/remove.go
+@@ -12,6 +12,8 @@ func RemoveHandle(client *arpc.Client, callback func(key string)) {
+ 			_ = c.Write(err.Error())
+ 			return
+ 		}
++		unlock := lockRule(req)
++		defer unlock()
+ 		service.Del(req)
+ 		callback(req)
+ 		_ = c.Write("success")
+diff --git a/client/internal/service/event/rule_lock.go b/client/internal/service/event/rule_lock.go
+new file mode 100644
+index 0000000..a465910
+--- /dev/null
++++ b/client/internal/service/event/rule_lock.go
+@@ -0,0 +1,17 @@
++package event
++
++import (
++	"hash/fnv"
++	"sync"
++)
++
++// Registration only completes after frpc.Start. Serialize removal with installation.
++var stripes [64]sync.Mutex
++
++func lockRule(key string) func() {
++	h := fnv.New32a()
++	h.Write([]byte(key))
++	m := &stripes[h.Sum32()%64]
++	m.Lock()
++	return m.Unlock
++}
+diff --git a/client/internal/service/impl.client.go b/client/internal/service/impl.client.go
+index 67f0ec5..c126b72 100644
+--- a/client/internal/service/impl.client.go
++++ b/client/internal/service/impl.client.go
+@@ -40,7 +40,7 @@ func (svc *Client) Start() (err error) {
+ 		err = svc.run()
+ 		for State.Get(svc.key) {
+ 			if err = svc.run(); err != nil {
+-				common.Logger.AddLog("client", svc.key+"客户端连接异常断开，等待5秒重试，err:"+err.Error())
++				common.Logger.AddLog("client", "客户端连接异常断开，等待5秒重试")
+ 				time.Sleep(time.Second * 5)
+ 			}
+ 		}
+@@ -122,12 +122,8 @@ func (svc *Client) run() (err error) {
+ 		return u != updateTag
+ 	}
+ 	event.PortCheckHandle(client)
+-	event.HostHandle(client, callback, checkUpdate)
+ 	event.ForwardHandle(client, callback, checkUpdate)
+-	event.TunnelHandle(client, callback, checkUpdate)
+-	event.ProxyHandle(client, callback, checkUpdate)
+ 	event.P2PHandle(client, callback, checkUpdate)
+-	event.CustomCfgHandle(client, callback, checkUpdate)
+ 	event.StopHandle(client, func() {
+ 		svc.Stop()
+ 	})
+@@ -137,11 +133,9 @@ func (svc *Client) run() (err error) {
+ 	})
+ 	go svc.ping(client)
+ 	// 开启证书目录变动监听
+-	certWatcherDone := certWatcher(client)
++
+ 	svc.stopFunc = func() {
+-		if certWatcherDone != nil {
+-			certWatcherDone()
+-		}
++
+ 		client.Stop()
+ 	}
+ 	<-stopChan
+diff --git a/client/internal/service/impl.node.go b/client/internal/service/impl.node.go
+index ef229c1..6de76d7 100644
+--- a/client/internal/service/impl.node.go
++++ b/client/internal/service/impl.node.go
+@@ -41,7 +41,7 @@ func (svc *Node) Start() (err error) {
+ 		err = svc.run()
+ 		for State.Get(svc.key) {
+ 			if err = svc.run(); err != nil {
+-				common.Logger.AddLog("client", svc.key+"节点连接异常断开，等待5秒重试，err:"+err.Error())
++				common.Logger.AddLog("client", "节点连接异常断开，等待5秒重试")
+ 				time.Sleep(time.Second * 5)
+ 			}
+ 		}
+@@ -134,7 +134,6 @@ func (svc *Node) run() (err error) {
+ 
+ 	event.ServerHandle(client, svc.generate.HttpUrl(), callback, checkUpdate)
+ 	event.PortCheckHandle(client)
+-	event.ServerDomainHandle(client, svc.proxyBaseUrl)
+ 	event.StopHandle(client, func() {
+ 		svc.Stop()
+ 	})
+diff --git a/client/internal/service/visitor/impl.p2p.go b/client/internal/service/visitor/impl.p2p.go
+index e50f2c6..cdcc79e 100644
+--- a/client/internal/service/visitor/impl.p2p.go
++++ b/client/internal/service/visitor/impl.p2p.go
+@@ -40,7 +40,7 @@ func (svc *P2P) Start() (err error) {
+ 		err = svc.run()
+ 		for service2.State.Get(svc.key) {
+ 			if err := svc.run(); err != nil {
+-				common.Logger.AddLog("client", svc.key+"P2P隧道异常停止，等待5秒重试，err:"+err.Error())
++				common.Logger.AddLog("client", "P2P隧道异常停止，等待5秒重试")
+ 				time.Sleep(time.Second * 5)
+ 			}
+ 		}
+@@ -101,12 +101,15 @@ func (svc *P2P) run() (err error) {
+ }
+ 
+ func (svc *P2P) loadConfig(url string) (result P2PConfig, err error) {
+-	response, err := http.Get(url)
++	response, err := (&http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}).Get(url)
+ 	if err != nil {
+ 		return result, err
+ 	}
+ 	defer response.Body.Close()
+-	bytes, err := io.ReadAll(response.Body)
++	if response.StatusCode != 200 {
++		return result, errors.New("visitor credentials rejected")
++	}
++	bytes, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+ 	if err != nil {
+ 		return result, err
+ 	}
+diff --git a/client/pkg/rpc_protocol/websocket/websocket.go b/client/pkg/rpc_protocol/websocket/websocket.go
+index 15eed02..6492064 100644
+--- a/client/pkg/rpc_protocol/websocket/websocket.go
++++ b/client/pkg/rpc_protocol/websocket/websocket.go
+@@ -156,7 +156,7 @@ func Dial(url string, header http.Header, args ...interface{}) (net.Conn, error)
+ 	if dialer.TLSClientConfig == nil {
+ 		dialer.TLSClientConfig = &tls.Config{}
+ 	}
+-	dialer.TLSClientConfig.InsecureSkipVerify = true
++	dialer.TLSClientConfig.InsecureSkipVerify = false
+ 	if len(args) > 0 {
+ 		d, ok := args[0].(*websocket.Dialer)
+ 		if ok {
+diff --git a/server/bootstrap/config.go b/server/bootstrap/config.go
+index cdd1520..8d23fbb 100644
+--- a/server/bootstrap/config.go
++++ b/server/bootstrap/config.go
+@@ -15,7 +15,7 @@ import (
+ 
+ func InitConfig() {
+ 	configFilePath := global.BASE_PATH + "/data/config.yaml"
+-	_ = os.MkdirAll(filepath.Dir(configFilePath), 0666)
++	_ = os.MkdirAll(filepath.Dir(configFilePath), 0700)
+ 
+ 	global.Logger.Info("init config", zap.String("path", configFilePath))
+ 	stat, err := os.Stat(configFilePath)
+@@ -26,6 +26,7 @@ func InitConfig() {
+ 		} else {
+ 			global.Logger.Info("init config finish", zap.String("path", configFilePath))
+ 		}
++		envCfg()
+ 		return
+ 	}
+ 	if stat.IsDir() {
+@@ -61,14 +62,14 @@ GOSTC_ADMIN_ADDR=%s
+ 
+ func writeConfigFile(path string) error {
+ 	global.Config = configs.Config{
+-		Address:   "0.0.0.0:8080",
++		Address:   "127.0.0.1:18081",
+ 		AuthKey:   utils.RandStr(16, utils.AllDict),
+ 		AuthExp:   time.Hour * 24 * 7,
+ 		AuthRenew: time.Hour * 2,
+ 		DbType:    "sqlite",
+ 		Sqlite: configs.Sqlite{
+ 			File:     global.BASE_PATH + "/data/data.db",
+-			LogLevel: "info",
++			LogLevel: "silent",
+ 		},
+ 		Mysql: configs.Mysql{
+ 			Host:     "127.0.0.1",
+@@ -78,9 +79,9 @@ func writeConfigFile(path string) error {
+ 			Pwd:      "root",
+ 			Prefix:   "gostc_",
+ 			Extend:   "?timeout=60s&readTimeout=30s&writeTimeout=30s&parseTime=true&loc=Local&charset=utf8mb4,utf8",
+-			LogLevel: "info",
++			LogLevel: "silent",
+ 		},
+ 	}
+ 	marshal, _ := yaml.Marshal(global.Config)
+-	return os.WriteFile(path, marshal, 0666)
++	return os.WriteFile(path, marshal, 0700)
+ }
+diff --git a/server/bootstrap/router.go b/server/bootstrap/router.go
+index 91656eb..9bdb6e2 100644
+--- a/server/bootstrap/router.go
++++ b/server/bootstrap/router.go
+@@ -15,8 +15,9 @@ func InitRouter() {
+ 	} else {
+ 		gin.SetMode(gin.DebugMode)
+ 	}
+-	engine = gin.Default()
+-	
++	engine = gin.New()
++	engine.Use(gin.Recovery())
++
+ 	if Route != nil {
+ 		Route(engine)
+ 	}
+diff --git a/server/global/env.go b/server/global/env.go
+index d476d8d..c082d2c 100644
+--- a/server/global/env.go
++++ b/server/global/env.go
+@@ -13,12 +13,11 @@ func Init() {
+ 	} else {
+ 		MODE = "prod"
+ 	}
+-	if BASE_PATH != "" {
+-		BASE_PATH = filepath.Dir(BASE_PATH)
+-	} else {
++	if BASE_PATH == "" {
++
+ 		BASE_PATH, _ = os.Executable()
++		BASE_PATH = filepath.Dir(BASE_PATH)
+ 	}
+-	BASE_PATH = filepath.Dir(BASE_PATH)
+ 	LOGGER_FILE_PATH = BASE_PATH + "/data/gostc.log"
+ 
+ 	fmt.Printf(`
+diff --git a/server/router/public/frp.go b/server/router/public/frp.go
+index 9690d02..72b15f6 100644
+--- a/server/router/public/frp.go
++++ b/server/router/public/frp.go
+@@ -13,6 +13,5 @@ func InitFrp(group *gin.RouterGroup) {
+ 	g.Any("ping", frp.Ping)
+ 	g.Any("newWorkConn", frp.NewWorkConn)
+ 	g.Any("newUserConn", frp.NewUserConn)
+-	g.Any("visitorTunnel", frp.VisitorTunnel)
+ 	g.Any("visitorP2P", frp.VisitorP2P)
+ }
+diff --git a/server/router/router.go b/server/router/router.go
+index af65197..1e0b3c9 100644
+--- a/server/router/router.go
++++ b/server/router/router.go
+@@ -1,88 +1,50 @@
+ package router
+ 
+ import (
+-	"github.com/gin-contrib/gzip"
++	"crypto/subtle"
+ 	"github.com/gin-gonic/gin"
++	"os"
+ 	"server/bootstrap"
++	nodes "server/controller/admin/gost_node"
++	clients "server/controller/normal/gost_client"
++	forwards "server/controller/normal/gost_client_forward"
++	peers "server/controller/normal/gost_client_p2p"
+ 	"server/global"
+-	"server/pkg/logger"
+-	"server/pkg/middleware"
++	"server/pkg/jwt"
+ 	"server/pkg/rpc_protocol/websocket"
+-	"server/router/admin"
+-	"server/router/auth"
+-	"server/router/normal"
+-	"server/router/open"
+ 	"server/router/public"
+ 	"server/router/rpc"
+-	"strings"
+ )
+ 
+ func init() {
+-	bootstrap.Route = func(engine *gin.Engine) {
+-		// 使用GZIP压缩数据
+-		engine.Use(gzip.Gzip(gzip.DefaultCompression))
+-
+-		// 记录HTTP请求日志
+-		httpLog := logger.NewLogger(logger.Option{
+-			To:         []string{global.BASE_PATH + "/data/httpLog/access.log"},
+-			Level:      "debug",
+-			MaxSize:    100,
+-			MaxAge:     30,
+-			MaxBackups: 10,
+-			Compress:   true,
++	bootstrap.Route = func(e *gin.Engine) {
++		secret := os.Getenv("GOSTC_CONTROL_SECRET")
++		if len(secret) < 32 {
++			panic("set GOSTC_CONTROL_SECRET (at least 32 characters)")
++		}
++		internal := e.Group("/control", func(c *gin.Context) {
++			if subtle.ConstantTimeCompare([]byte(secret), []byte(c.GetHeader("X-Control-Secret"))) != 1 {
++				c.AbortWithStatus(403)
++				return
++			}
++			c.Set("claims", jwt.Claims{Code: "1", Data: map[string]string{"admin": "1"}})
+ 		})
+-		engine.Use(middleware.Logger(httpLog, global.MODE == "dev", func(c *gin.Context) bool {
+-			return strings.Contains(c.Request.RequestURI, "api/v")
+-		}))
+-
+-		_ = InitStatic(engine)
+-
+-		adminGroup := engine.Group("api/v1/admin")
+-		admin.InitGostClient(adminGroup)
+-		admin.InitGostClientForward(adminGroup)
+-		admin.InitGostClientHost(adminGroup)
+-		admin.InitGostClientTunnel(adminGroup)
+-		admin.InitGostClientProxy(adminGroup)
+-		admin.InitGostClientP2P(adminGroup)
+-		admin.InitGostNodeConfig(adminGroup)
+-		admin.InitGostNode(adminGroup)
+-		admin.InitGostNodeBind(adminGroup)
+-		admin.InitGostNodeRule(adminGroup)
+-		admin.InitSystemUser(adminGroup)
+-		admin.InitSystemNotice(adminGroup)
+-		admin.InitSystemConfig(adminGroup)
+-		admin.InitDashboard(adminGroup)
+-
+-		publicGroup := engine.Group("api/v1/public")
+-		public.InitSystemConfig(publicGroup)
+-		public.InitFrp(publicGroup)
+-		public.InitGost(publicGroup)
+-
+-		authGroup := engine.Group("api/v1/auth")
+-		auth.InitAuth(authGroup)
+-
+-		normalGroup := engine.Group("api/v1/normal")
+-		normal.InitGost(normalGroup)
+-		normal.InitGostClient(normalGroup)
+-		normal.InitGostClientForward(normalGroup)
+-		normal.InitGostClientHost(normalGroup)
+-		normal.InitGostClientTunnel(normalGroup)
+-		normal.InitGostClientProxy(normalGroup)
+-		normal.InitGostClientP2P(normalGroup)
+-		normal.InitGostNode(normalGroup)
+-		normal.InitGostObs(normalGroup)
+-		normal.InitSystemNotice(normalGroup)
+-		normal.InitDashboard(normalGroup)
+-		normal.InitFrpClientCfg(normalGroup)
+-
+-		openGroup := engine.Group("api/v1/open")
+-		open.InitAuth(openGroup.Group("auth"))
+-
+-		// RPC Server
++		handlers := map[string]map[string]gin.HandlerFunc{
++			"node":    {"page": nodes.Page, "create": nodes.Create, "update": nodes.Update, "delete": nodes.Delete},
++			"client":  {"page": clients.Page, "create": clients.Create, "update": clients.Update, "delete": clients.Delete},
++			"forward": {"page": forwards.Page, "create": forwards.Create, "update": forwards.Update, "enable": forwards.Enable, "delete": forwards.Delete},
++			"p2p":     {"page": peers.Page, "create": peers.Create, "update": peers.Update, "enable": peers.Enable, "delete": peers.Delete},
++		}
++		for kind, actions := range handlers {
++			for action, h := range actions {
++				internal.POST("/"+kind+"/"+action, h)
++			}
++		}
++		public.InitFrp(e.Group("/api/v1/public"))
+ 		ln, err := websocket.Listen(global.Config.Address, nil)
+ 		if err != nil {
+-			panic("rpc server listen fail,err" + err.Error())
++			panic(err)
+ 		}
+-		rpc.InitFrp(engine, ln)
++		rpc.InitFrp(e, ln)
+ 	}
+ }
+diff --git a/server/router/rpc/frp.go b/server/router/rpc/frp.go
+index 6fb6514..a707ac7 100644
+--- a/server/router/rpc/frp.go
++++ b/server/router/rpc/frp.go
+@@ -14,8 +14,7 @@ import (
+ 	"server/repository"
+ 	cache3 "server/repository/cache"
+ 	"server/service/engine"
+-	service "server/service/normal/gost_client_host"
+-	"strings"
++
+ 	"time"
+ )
+ 
+@@ -164,78 +163,22 @@ func InitFrp(ginEngine *gin.Engine, ln net.Listener) {
+ 		engine.NodeConfig(db, gostNode.Code)
+ 	})
+ 
+-	rpcServer.Handler.Handle("rpc/metrics/input", func(c *arpc.Context) {
+-		var req TrafficOutput
+-		if err := c.Bind(&req); err != nil {
+-			_ = c.Write(err.Error())
+-			return
+-		}
+-		code := strings.Split(req.Name, "_")[0]
+-		tunnelInfo := cache3.GetTunnelInfo(code)
+-		go cache3.IncreaseObs(time.Now().Format(time.DateOnly), tunnelInfo.Code, tunnelInfo.ClientCode, tunnelInfo.NodeCode, tunnelInfo.UserCode, cache3.TunnelObs{
+-			InputBytes:  req.Total,
+-			OutputBytes: 0,
+-		})
+-		_ = c.Write("success")
+-	})
+-	rpcServer.Handler.Handle("rpc/metrics/output", func(c *arpc.Context) {
+-		var req TrafficOutput
+-		if err := c.Bind(&req); err != nil {
+-			_ = c.Write(err.Error())
+-			return
+-		}
+-		code := strings.Split(req.Name, "_")[0]
+-		tunnelInfo := cache3.GetTunnelInfo(code)
+-		go cache3.IncreaseObs(time.Now().Format(time.DateOnly), tunnelInfo.Code, tunnelInfo.ClientCode, tunnelInfo.NodeCode, tunnelInfo.UserCode, cache3.TunnelObs{
+-			InputBytes:  0,
+-			OutputBytes: req.Total,
+-		})
+-		_ = c.Write("success")
+-	})
+-
+-	rpcServer.Handler.Handle("rpc/client/host_set_domain_certs", func(c *arpc.Context) {
+-		var req HostSetDomainCerts
+-		if err := c.Bind(&req); err != nil {
+-			_ = c.Write(err.Error())
+-			return
+-		}
+-		userCodeTemp, ok := c.Client.Get("userCode")
+-		if !ok {
+-			_ = c.Write("unknown error")
++	// 入口
++	ginEngine.GET("rpc/ws", func(c *gin.Context) {
++		key := c.GetHeader("key")
++		if len(key) != 36 {
++			c.AbortWithStatus(403)
+ 			return
+ 		}
+-		userCode := userCodeTemp.(string)
+ 		db, _, _ := repository.Get("")
+-		host, err := db.GostClientHost.Preload(
+-			db.GostClientHost.Node,
+-		).Where(
+-			db.GostClientHost.CustomDomain.Eq(req.Domain),
+-			db.GostClientHost.UserCode.Eq(userCode),
+-		).First()
+-		if err != nil {
+-			_ = c.Write("no tunnel matching the domain name was queried.")
+-			return
+-		}
+-		if host.CustomCert == req.Cert && host.CustomKey == req.Key {
+-			_ = c.Write("success")
+-			return
+-		}
+-		if err := service.Service.Domain(userCode, service.DomainReq{
+-			Code:             host.Code,
+-			CustomDomain:     host.CustomDomain,
+-			CustomCert:       req.Cert,
+-			CustomKey:        req.Key,
+-			CustomForceHttps: host.CustomForceHttps,
+-			DomainMatcher:    host.CustomDomainMatcher,
+-		}); err != nil {
+-			_ = c.Write(err.Error())
+-			return
++		nc, _ := db.GostNode.Where(db.GostNode.Key.Eq(key)).Count()
++		if nc == 0 {
++			cc, _ := db.GostClient.Where(db.GostClient.Key.Eq(key)).Count()
++			if cc == 0 {
++				c.AbortWithStatus(403)
++				return
++			}
+ 		}
+-		_ = c.Write("success")
+-	})
+-
+-	// 入口
+-	ginEngine.GET("rpc/ws", func(c *gin.Context) {
+ 		ln.(*websocket.Listener).Handler(c.Writer, c.Request)
+ 	})
+ 
+diff --git a/server/service/admin/gost_node/service.create.go b/server/service/admin/gost_node/service.create.go
+index 07b2573..c721afc 100644
+--- a/server/service/admin/gost_node/service.create.go
++++ b/server/service/admin/gost_node/service.create.go
+@@ -12,6 +12,7 @@ import (
+ )
+ 
+ type CreateReq struct {
++	RuleID             string   `json:"id"`
+ 	Name               string   `binding:"required" json:"name" label:"名称"`
+ 	Remark             string   `json:"remark"`
+ 	Rules              []string `json:"rules"`
+@@ -42,6 +43,7 @@ type CreateReq struct {
+ func (service *service) Create(req CreateReq) error {
+ 	db, _, log := repository.Get("")
+ 	var node = model.GostNode{
++		Base:               model.Base{Code: req.RuleID},
+ 		Key:                uuid.NewString(),
+ 		Name:               req.Name,
+ 		Remark:             req.Remark,
+diff --git a/server/service/engine/ack.go b/server/service/engine/ack.go
+new file mode 100644
+index 0000000..d26490a
+--- /dev/null
++++ b/server/service/engine/ack.go
+@@ -0,0 +1,27 @@
++package engine
++
++import (
++	"sync"
++	"time"
++)
++
++type receipt struct {
++	Tag    string
++	Action string
++	At     time.Time
++}
++
++var receipts sync.Map
++
++func ack(code, tag, action string) { receipts.Store(code, receipt{tag, action, time.Now().UTC()}) }
++func Receipt(code, tag string) (string, string) {
++	v, ok := receipts.Load(code)
++	if !ok {
++		return "pending", ""
++	}
++	r := v.(receipt)
++	if r.Tag != tag {
++		return "pending", ""
++	}
++	return r.Action, r.At.Format(time.RFC3339Nano)
++}
+diff --git a/server/service/engine/arpc.client.engine.go b/server/service/engine/arpc.client.engine.go
+index 4e89fec..af3a63f 100644
+--- a/server/service/engine/arpc.client.engine.go
++++ b/server/service/engine/arpc.client.engine.go
+@@ -62,7 +62,7 @@ func (e *ARpcClientEngine) HostConfig(tx *query.Query, hostCode string) error {
+ 	}
+ 	var data = HostConfig{
+ 		Key:       host.Code,
+-		UpdateTag: host.UpdatedAt.Format(time.DateTime) + "#" + host.Node.UpdatedAt.Format(time.DateTime),
++		UpdateTag: host.UpdatedAt.Format(time.RFC3339Nano) + "#" + host.Node.UpdatedAt.Format(time.RFC3339Nano),
+ 		BaseCfg:   e.generateServerCommonCfg(host.PoolCount, host.Node, *auth),
+ 		IsHttps:   host.TargetHttps == 1,
+ 		Http: HTTPProxyConfig{
+@@ -143,7 +143,7 @@ func (e *ARpcClientEngine) ForwardConfig(tx *query.Query, forwardCode string) er
+ 
+ 	var data = ForwardConfig{
+ 		Key:       forward.Code,
+-		UpdateTag: forward.UpdatedAt.Format(time.DateTime) + "#" + forward.Node.UpdatedAt.Format(time.DateTime),
++		UpdateTag: forward.UpdatedAt.Format(time.RFC3339Nano) + "#" + forward.Node.UpdatedAt.Format(time.RFC3339Nano),
+ 		BaseCfg:   e.generateServerCommonCfg(forward.PoolCount, forward.Node, *auth),
+ 		TCP: TCPProxyConfig{
+ 			TCPProxyConfig: v1.TCPProxyConfig{
+@@ -220,8 +220,9 @@ func (e *ARpcClientEngine) ForwardConfig(tx *query.Query, forwardCode string) er
+ 			return err
+ 		}
+ 		if relay != "success" {
+-			global.Logger.Error("send message fail", zap.String("relay", relay))
++			return errors.New("client did not acknowledge configuration")
+ 		}
++		ack(data.Key, data.UpdateTag, "applied")
+ 		return nil
+ 	}, 5, time.Second*5)
+ 	return nil
+@@ -235,8 +236,9 @@ func (e *ARpcClientEngine) RemoveForward(tx *query.Query, forward model.GostClie
+ 			return err
+ 		}
+ 		if relay != "success" {
+-			global.Logger.Error("send message fail", zap.String("relay", relay))
++			return errors.New("client did not acknowledge configuration")
+ 		}
++		ack(forward.Code, forward.UpdatedAt.Format(time.RFC3339Nano), "revoked")
+ 		return nil
+ 	}, 5, time.Second*5)
+ 	return nil
+@@ -258,7 +260,7 @@ func (e *ARpcClientEngine) TunnelConfig(tx *query.Query, tunnelCode string) erro
+ 	}
+ 	var data = TunnelConfig{
+ 		Key:       tunnel.Code,
+-		UpdateTag: tunnel.UpdatedAt.Format(time.DateTime) + "#" + tunnel.Node.UpdatedAt.Format(time.DateTime),
++		UpdateTag: tunnel.UpdatedAt.Format(time.RFC3339Nano) + "#" + tunnel.Node.UpdatedAt.Format(time.RFC3339Nano),
+ 		BaseCfg:   e.generateServerCommonCfg(tunnel.PoolCount, tunnel.Node, *auth),
+ 		STCP: STCPProxyConfig{
+ 			STCPProxyConfig: v1.STCPProxyConfig{
+@@ -357,7 +359,7 @@ func (e *ARpcClientEngine) P2PConfig(tx *query.Query, p2pCode string) error {
+ 
+ 	var data = P2PConfig{
+ 		Key:       p2p.Code,
+-		UpdateTag: p2p.UpdatedAt.Format(time.DateTime) + "#" + p2p.Node.UpdatedAt.Format(time.DateTime),
++		UpdateTag: p2p.UpdatedAt.Format(time.RFC3339Nano) + "#" + p2p.Node.UpdatedAt.Format(time.RFC3339Nano),
+ 		BaseCfg:   e.generateServerCommonCfg(p2p.PoolCount, p2p.Node, *auth),
+ 		XTCP: XTCPProxyConfig{
+ 			XTCPProxyConfig: v1.XTCPProxyConfig{
+@@ -419,8 +421,9 @@ func (e *ARpcClientEngine) P2PConfig(tx *query.Query, p2pCode string) error {
+ 			return err
+ 		}
+ 		if relay != "success" {
+-			global.Logger.Error("send message fail", zap.String("relay", relay))
++			return errors.New("client did not acknowledge configuration")
+ 		}
++		ack(data.Key, data.UpdateTag, "applied")
+ 		return nil
+ 	}, 5, time.Second*5)
+ 	return nil
+@@ -434,8 +437,9 @@ func (e *ARpcClientEngine) RemoveP2P(tx *query.Query, p2p model.GostClientP2P) e
+ 			return err
+ 		}
+ 		if relay != "success" {
+-			global.Logger.Error("send message fail", zap.String("relay", relay))
++			return errors.New("client did not acknowledge configuration")
+ 		}
++		ack(p2p.Code, p2p.UpdatedAt.Format(time.RFC3339Nano), "revoked")
+ 		return nil
+ 	}, 5, time.Second*5)
+ 	return nil
+@@ -471,7 +475,7 @@ func (e *ARpcClientEngine) ProxyConfig(tx *query.Query, proxyCode string) error
+ 		Limiter:        fmt.Sprintf("%dKB", proxy.Limiter*128),
+ 		UseEncryption:  proxy.UseEncryption,
+ 		UseCompression: proxy.UseCompression,
+-		UpdateTag:      proxy.UpdatedAt.Format(time.DateTime) + "#" + proxy.Node.UpdatedAt.Format(time.DateTime),
++		UpdateTag:      proxy.UpdatedAt.Format(time.RFC3339Nano) + "#" + proxy.Node.UpdatedAt.Format(time.RFC3339Nano),
+ 	}
+ 
+ 	go utils.Retry(func() error {
+@@ -536,7 +540,7 @@ func (e *ARpcClientEngine) CustomCfgConfig(tx *query.Query, cfgCode string) erro
+ 
+ 	var data = CustomCfgConfig{
+ 		Key:       cfg.Code,
+-		UpdateTag: cfg.UpdatedAt.Format(time.DateTime),
++		UpdateTag: cfg.UpdatedAt.Format(time.RFC3339Nano),
+ 		Type:      cfg.ContentType,
+ 		Content:   cfg.Content,
+ 	}
+diff --git a/server/service/engine/arpc.node.engine.go b/server/service/engine/arpc.node.engine.go
+index a642898..dfa0315 100644
+--- a/server/service/engine/arpc.node.engine.go
++++ b/server/service/engine/arpc.node.engine.go
+@@ -6,6 +6,7 @@ import (
+ 	v1 "github.com/SianHH/frp-package/pkg/config/v1"
+ 	"github.com/lesismal/arpc"
+ 	"go.uber.org/zap"
++	"net"
+ 	"server/global"
+ 	"server/pkg/utils"
+ 	"server/repository/query"
+@@ -47,15 +48,19 @@ func (e *ARpcNodeEngine) Config(tx *query.Query) error {
+ 		return err
+ 	}
+ 
+-	_, serverPort := node.GetOriginAddress()
++	host, serverPort := node.GetOriginAddress()
++	bindAddr := "0.0.0.0"
++	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
++		bindAddr = host
++	}
+ 	var data = ServerConfig{
+-		UpdateTag: node.UpdatedAt.Format(time.DateTime),
++		UpdateTag: node.UpdatedAt.Format(time.RFC3339Nano),
+ 		Key:       node.Code,
+ 		ServerConfig: v1.ServerConfig{
+ 			Auth: v1.AuthServerConfig{
+ 				Token: node.Code,
+ 			},
+-			BindAddr:              "0.0.0.0",
++			BindAddr:              bindAddr,
+ 			BindPort:              serverPort,
+ 			KCPBindPort:           0,
+ 			QUICBindPort:          0,
+diff --git a/server/service/normal/gost_client/service.create.go b/server/service/normal/gost_client/service.create.go
+index 33b5268..3c5d589 100644
+--- a/server/service/normal/gost_client/service.create.go
++++ b/server/service/normal/gost_client/service.create.go
+@@ -10,12 +10,14 @@ import (
+ )
+ 
+ type CreateReq struct {
+-	Name string `binding:"required" json:"name" label:"名称"`
++	RuleID string `json:"id"`
++	Name   string `binding:"required" json:"name" label:"名称"`
+ }
+ 
+ func (service *service) Create(claims jwt.Claims, req CreateReq) error {
+ 	db, _, log := repository.Get("")
+ 	if err := db.GostClient.Create(&model.GostClient{
++		Base:     model.Base{Code: req.RuleID},
+ 		Name:     req.Name,
+ 		UserCode: claims.Code,
+ 		Key:      uuid.NewString(),
+diff --git a/server/service/normal/gost_client_forward/service.create.go b/server/service/normal/gost_client_forward/service.create.go
+index 2e57bfc..ddecb88 100644
+--- a/server/service/normal/gost_client_forward/service.create.go
++++ b/server/service/normal/gost_client_forward/service.create.go
+@@ -13,10 +13,10 @@ import (
+ 	"server/service/common/node_port"
+ 	"server/service/common/node_rule"
+ 	"server/service/engine"
+-	"time"
+ )
+ 
+ type CreateReq struct {
++	RuleID         string `json:"id"`
+ 	Name           string `binding:"required" json:"name" label:"名称"`
+ 	TargetIp       string `binding:"required" json:"targetIp" label:"内网IP"`
+ 	TargetPort     string `binding:"required" json:"targetPort" label:"内网端口"`
+@@ -24,7 +24,6 @@ type CreateReq struct {
+ 	Port           string `json:"port"`
+ 	ClientCode     string `binding:"required" json:"clientCode" label:"客户端编号"`
+ 	NodeCode       string `binding:"required" json:"nodeCode" label:"节点编号"`
+-	ConfigCode     string `binding:"required" json:"configCode" label:"套餐配置"`
+ 	UseEncryption  int    `json:"useEncryption"`
+ 	UseCompression int    `json:"useCompression"`
+ 	PoolCount      int    `json:"poolCount"`
+@@ -38,16 +37,10 @@ func (service *service) Create(claims jwt.Claims, req CreateReq) (err error) {
+ 	if !utils.ValidatePort(req.TargetPort) {
+ 		return errors.New("内网端口格式错误")
+ 	}
+-	if req.Port != "" && !utils.ValidatePort(req.TargetPort) {
++	if req.Port != "" && !utils.ValidatePort(req.Port) {
+ 		return errors.New("远程端口格式错误")
+ 	}
+ 
+-	var cfg model.SystemConfigGost
+-	cache2.GetSystemConfigGost(&cfg)
+-	if cfg.FuncForward != "1" {
+-		return errors.New("管理员未启用该功能")
+-	}
+-
+ 	return db.Transaction(func(tx *query.Query) error {
+ 		user, _ := tx.SystemUser.Where(tx.SystemUser.Code.Eq(claims.Code)).First()
+ 		if user == nil {
+@@ -66,13 +59,6 @@ func (service *service) Create(claims jwt.Claims, req CreateReq) (err error) {
+ 			return err
+ 		}
+ 
+-		cfg, _ := tx.GostNodeConfig.Where(
+-			tx.GostNodeConfig.Code.Eq(req.ConfigCode),
+-			tx.GostNodeConfig.NodeCode.Eq(node.Code),
+-		).First()
+-		if cfg == nil {
+-			return errors.New("套餐错误")
+-		}
+ 		client, _ := tx.GostClient.Where(
+ 			tx.GostClient.UserCode.Eq(claims.Code),
+ 			tx.GostClient.Code.Eq(req.ClientCode),
+@@ -81,40 +67,6 @@ func (service *service) Create(claims jwt.Claims, req CreateReq) (err error) {
+ 			return errors.New("客户端错误")
+ 		}
+ 
+-		var expAt = time.Now().Unix()
+-		switch cfg.ChargingType {
+-		case model.GOST_CONFIG_CHARGING_CUCLE_DAY:
+-			expAt = time.Now().Add(time.Duration(cfg.Cycle) * 24 * time.Hour).Unix()
+-			if user.Amount.LessThan(cfg.Amount) {
+-				return errors.New("积分不足")
+-			}
+-			if _, err := tx.SystemUser.Where(
+-				tx.SystemUser.Code.Eq(user.Code),
+-				tx.SystemUser.Version.Eq(user.Version),
+-			).UpdateSimple(
+-				tx.SystemUser.Amount.Value(user.Amount.Sub(cfg.Amount)),
+-				tx.SystemUser.Version.Value(user.Version+1),
+-			); err != nil {
+-				log.Error("扣减积分失败", zap.Error(err))
+-				return errors.New("操作失败")
+-			}
+-		case model.GOST_CONFIG_CHARGING_ONLY_ONCE:
+-			if user.Amount.LessThan(cfg.Amount) {
+-				return errors.New("积分不足")
+-			}
+-
+-			if _, err := tx.SystemUser.Where(
+-				tx.SystemUser.Code.Eq(user.Code),
+-				tx.SystemUser.Version.Eq(user.Version),
+-			).UpdateSimple(
+-				tx.SystemUser.Amount.Value(user.Amount.Sub(cfg.Amount)),
+-				tx.SystemUser.Version.Value(user.Version+1),
+-			); err != nil {
+-				log.Error("扣减积分失败", zap.Error(err))
+-				return errors.New("操作失败")
+-			}
+-		}
+-
+ 		var port = req.Port
+ 		if port == "" {
+ 			port, err = GetPort(tx, *node)
+@@ -142,26 +94,19 @@ func (service *service) Create(claims jwt.Claims, req CreateReq) (err error) {
+ 		}
+ 
+ 		var forward = model.GostClientForward{
+-			Name:           req.Name,
+-			TargetIp:       req.TargetIp,
+-			TargetPort:     req.TargetPort,
+-			Port:           port,
+-			ProxyProtocol:  req.ProxyProtocol,
+-			NodeCode:       req.NodeCode,
+-			ClientCode:     req.ClientCode,
+-			UserCode:       claims.Code,
+-			UseEncryption:  req.UseEncryption,
+-			UseCompression: req.UseCompression,
+-			PoolCount:      req.PoolCount,
+-			GostClientConfig: model.GostClientConfig{
+-				ChargingType: cfg.ChargingType,
+-				Cycle:        cfg.Cycle,
+-				Amount:       cfg.Amount,
+-				Limiter:      cfg.Limiter,
+-				//RLimiter:     cfg.RLimiter,
+-				//CLimiter:     cfg.CLimiter,
+-				ExpAt: expAt,
+-			},
++			Base:             model.Base{Code: req.RuleID},
++			Name:             req.Name,
++			TargetIp:         req.TargetIp,
++			TargetPort:       req.TargetPort,
++			Port:             port,
++			ProxyProtocol:    req.ProxyProtocol,
++			NodeCode:         req.NodeCode,
++			ClientCode:       req.ClientCode,
++			UserCode:         claims.Code,
++			UseEncryption:    req.UseEncryption,
++			UseCompression:   req.UseCompression,
++			PoolCount:        req.PoolCount,
++			GostClientConfig: model.GostClientConfig{ChargingType: model.GOST_CONFIG_CHARGING_ONLY_ONCE},
+ 		}
+ 		if err = tx.GostClientForward.Create(&forward); err != nil {
+ 			node_port.ReleasePort(node.Code, port)
+diff --git a/server/service/normal/gost_client_forward/service.page.go b/server/service/normal/gost_client_forward/service.page.go
+index 150232e..944eb82 100644
+--- a/server/service/normal/gost_client_forward/service.page.go
++++ b/server/service/normal/gost_client_forward/service.page.go
+@@ -8,6 +8,7 @@ import (
+ 	"server/repository"
+ 	cache2 "server/repository/cache"
+ 	"server/service/common/warn_msg"
++	"server/service/engine"
+ 	"time"
+ )
+ 
+@@ -19,6 +20,9 @@ type PageReq struct {
+ }
+ 
+ type Item struct {
++	Revision       string        `json:"revision"`
++	Applied        string        `json:"applied"`
++	AppliedAt      string        `json:"appliedAt"`
+ 	Code           string        `json:"code"`
+ 	Name           string        `json:"name"`
+ 	TargetIp       string        `json:"targetIp"`
+@@ -106,7 +110,13 @@ func (service *service) Page(claims jwt.Claims, req PageReq) (list []Item, total
+ 		//tcpIp, tcpPort := forward.GetTcpMatcher()
+ 		//sshIp, sshPort := forward.GetSSHMatcher()
+ 		obsInfo := cache2.GetTunnelObsDateRange(cache2.MONTH_DATEONLY_LIST, forward.Code)
++		tag := forward.UpdatedAt.Format(time.RFC3339Nano)
++		if forward.Enable == 1 {
++			tag += "#" + forward.Node.UpdatedAt.Format(time.RFC3339Nano)
++		}
++		state, at := engine.Receipt(forward.Code, tag)
+ 		list = append(list, Item{
++			Revision: forward.UpdatedAt.UTC().Format(time.RFC3339Nano), Applied: state, AppliedAt: at,
+ 			Code:          forward.Code,
+ 			Name:          forward.Name,
+ 			TargetIp:      forward.TargetIp,
+diff --git a/server/service/normal/gost_client_forward/service.update.go b/server/service/normal/gost_client_forward/service.update.go
+index ca4b469..e332d1a 100644
+--- a/server/service/normal/gost_client_forward/service.update.go
++++ b/server/service/normal/gost_client_forward/service.update.go
+@@ -35,7 +35,7 @@ func (service *service) Update(claims jwt.Claims, req UpdateReq) error {
+ 		return errors.New("内网端口格式错误")
+ 	}
+ 
+-	if req.Port != "" && !utils.ValidatePort(req.TargetPort) {
++	if req.Port != "" && !utils.ValidatePort(req.Port) {
+ 		return errors.New("远程端口格式错误")
+ 	}
+ 	return db.Transaction(func(tx *query.Query) error {
+diff --git a/server/service/normal/gost_client_p2p/service.create.go b/server/service/normal/gost_client_p2p/service.create.go
+index 6f43e50..0cbac56 100644
+--- a/server/service/normal/gost_client_p2p/service.create.go
++++ b/server/service/normal/gost_client_p2p/service.create.go
+@@ -12,16 +12,16 @@ import (
+ 	"server/repository/query"
+ 	"server/service/common/node_rule"
+ 	"server/service/engine"
+-	"time"
+ )
+ 
+ type CreateReq struct {
++	Forward        int    `json:"forward"`
++	RuleID         string `json:"id"`
+ 	Name           string `binding:"required" json:"name" label:"名称"`
+ 	TargetIp       string `binding:"required" json:"targetIp" label:"内网IP"`
+ 	TargetPort     string `binding:"required" json:"targetPort" label:"内网端口"`
+ 	NodeCode       string `binding:"required" json:"nodeCode" label:"节点编号"`
+ 	ClientCode     string `binding:"required" json:"clientCode" label:"客户端编号"`
+-	ConfigCode     string `binding:"required" json:"configCode" label:"套餐配置"`
+ 	UseEncryption  int    `json:"useEncryption"`
+ 	UseCompression int    `json:"useCompression"`
+ 	PoolCount      int    `json:"poolCount"`
+@@ -36,12 +36,6 @@ func (service *service) Create(claims jwt.Claims, req CreateReq) error {
+ 		return errors.New("内网端口格式错误")
+ 	}
+ 
+-	var cfg model.SystemConfigGost
+-	cache2.GetSystemConfigGost(&cfg)
+-	if cfg.FuncP2P != "1" {
+-		return errors.New("管理员未启用该功能")
+-	}
+-
+ 	return db.Transaction(func(tx *query.Query) error {
+ 		user, _ := tx.SystemUser.Where(tx.SystemUser.Code.Eq(claims.Code)).First()
+ 		if user == nil {
+@@ -57,13 +51,6 @@ func (service *service) Create(claims jwt.Claims, req CreateReq) error {
+ 			return err
+ 		}
+ 
+-		cfg, _ := tx.GostNodeConfig.Where(
+-			tx.GostNodeConfig.Code.Eq(req.ConfigCode),
+-			tx.GostNodeConfig.NodeCode.Eq(node.Code),
+-		).First()
+-		if cfg == nil {
+-			return errors.New("套餐错误")
+-		}
+ 		client, _ := tx.GostClient.Where(
+ 			tx.GostClient.UserCode.Eq(claims.Code),
+ 			tx.GostClient.Code.Eq(req.ClientCode),
+@@ -72,59 +59,20 @@ func (service *service) Create(claims jwt.Claims, req CreateReq) error {
+ 			return errors.New("客户端错误")
+ 		}
+ 
+-		var expAt = time.Now().Unix()
+-		switch cfg.ChargingType {
+-		case model.GOST_CONFIG_CHARGING_CUCLE_DAY:
+-			expAt = time.Now().Add(time.Duration(cfg.Cycle) * 24 * time.Hour).Unix()
+-			if user.Amount.LessThan(cfg.Amount) {
+-				return errors.New("积分不足")
+-			}
+-			if _, err := tx.SystemUser.Where(
+-				tx.SystemUser.Code.Eq(user.Code),
+-				tx.SystemUser.Version.Eq(user.Version),
+-			).UpdateSimple(
+-				tx.SystemUser.Amount.Value(user.Amount.Sub(cfg.Amount)),
+-				tx.SystemUser.Version.Value(user.Version+1),
+-			); err != nil {
+-				log.Error("扣减积分失败", zap.Error(err))
+-				return errors.New("操作失败")
+-			}
+-		case model.GOST_CONFIG_CHARGING_ONLY_ONCE:
+-			if user.Amount.LessThan(cfg.Amount) {
+-				return errors.New("积分不足")
+-			}
+-			if _, err := tx.SystemUser.Where(
+-				tx.SystemUser.Code.Eq(user.Code),
+-				tx.SystemUser.Version.Eq(user.Version),
+-			).UpdateSimple(
+-				tx.SystemUser.Amount.Value(user.Amount.Sub(cfg.Amount)),
+-				tx.SystemUser.Version.Value(user.Version+1),
+-			); err != nil {
+-				log.Error("扣减积分失败", zap.Error(err))
+-				return errors.New("操作失败")
+-			}
+-		}
+-
+ 		var p2p = model.GostClientP2P{
+-			Name:           req.Name,
+-			TargetIp:       req.TargetIp,
+-			TargetPort:     req.TargetPort,
+-			VKey:           uuid.NewString(),
+-			NodeCode:       req.NodeCode,
+-			ClientCode:     req.ClientCode,
+-			UserCode:       claims.Code,
+-			UseEncryption:  req.UseEncryption,
+-			UseCompression: req.UseCompression,
+-			PoolCount:      req.PoolCount,
+-			GostClientConfig: model.GostClientConfig{
+-				ChargingType: cfg.ChargingType,
+-				Cycle:        cfg.Cycle,
+-				Amount:       cfg.Amount,
+-				Limiter:      cfg.Limiter,
+-				//RLimiter:     cfg.RLimiter,
+-				//CLimiter:     cfg.CLimiter,
+-				ExpAt: expAt,
+-			},
++			Base:             model.Base{Code: req.RuleID},
++			Name:             req.Name,
++			TargetIp:         req.TargetIp,
++			TargetPort:       req.TargetPort,
++			Forward:          req.Forward,
++			VKey:             uuid.NewString(),
++			NodeCode:         req.NodeCode,
++			ClientCode:       req.ClientCode,
++			UserCode:         claims.Code,
++			UseEncryption:    req.UseEncryption,
++			UseCompression:   req.UseCompression,
++			PoolCount:        req.PoolCount,
++			GostClientConfig: model.GostClientConfig{ChargingType: model.GOST_CONFIG_CHARGING_ONLY_ONCE},
+ 		}
+ 		if err := tx.GostClientP2P.Create(&p2p); err != nil {
+ 			log.Error("新增用户P2P隧道失败", zap.Error(err))
+diff --git a/server/service/normal/gost_client_p2p/service.page.go b/server/service/normal/gost_client_p2p/service.page.go
+index 64e4937..9e30878 100644
+--- a/server/service/normal/gost_client_p2p/service.page.go
++++ b/server/service/normal/gost_client_p2p/service.page.go
+@@ -8,6 +8,7 @@ import (
+ 	"server/repository"
+ 	cache2 "server/repository/cache"
+ 	"server/service/common/warn_msg"
++	"server/service/engine"
+ 	"time"
+ )
+ 
+@@ -19,6 +20,9 @@ type PageReq struct {
+ }
+ 
+ type Item struct {
++	Revision       string     `json:"revision"`
++	Applied        string     `json:"applied"`
++	AppliedAt      string     `json:"appliedAt"`
+ 	Code           string     `json:"code"`
+ 	Name           string     `json:"name"`
+ 	TargetIp       string     `json:"targetIp"`
+@@ -83,7 +87,13 @@ func (service *service) Page(claims jwt.Claims, req PageReq) (list []Item, total
+ 		db.GostClientP2P.Node,
+ 	).Where(where...).Order(db.GostClientP2P.Id.Desc()).FindByPage(req.GetOffset(), req.GetLimit())
+ 	for _, p2p := range p2ps {
++		tag := p2p.UpdatedAt.Format(time.RFC3339Nano)
++		if p2p.Enable == 1 {
++			tag += "#" + p2p.Node.UpdatedAt.Format(time.RFC3339Nano)
++		}
++		state, at := engine.Receipt(p2p.Code, tag)
+ 		list = append(list, Item{
++			Revision: p2p.UpdatedAt.UTC().Format(time.RFC3339Nano), Applied: state, AppliedAt: at,
+ 			Code:       p2p.Code,
+ 			Name:       p2p.Name,
+ 			TargetIp:   p2p.TargetIp,
+diff --git a/server/service/public/frp/service.login.go b/server/service/public/frp/service.login.go
+index 36c20e7..1651621 100644
+--- a/server/service/public/frp/service.login.go
++++ b/server/service/public/frp/service.login.go
+@@ -31,7 +31,7 @@ type LoginReq struct {
+ 
+ func (s *service) Login(req LoginReq) (any, error) {
+ 	now := time.Now()
+-	code := cache2.GetGostAuth(req.Content.Metas.User, req.Content.Metas.Password)
++	code := loginCode(req.Content.Metas.User, req.Content.Metas.Password)
+ 	if code == "" {
+ 		return nil, errors.New("unauthorized")
+ 	}
+diff --git a/server/service/public/frp/service.newProxy.go b/server/service/public/frp/service.newProxy.go
+index a5fcab5..6006532 100644
+--- a/server/service/public/frp/service.newProxy.go
++++ b/server/service/public/frp/service.newProxy.go
+@@ -4,7 +4,9 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"server/model"
++	"server/repository"
+ 	cache2 "server/repository/cache"
++	"strconv"
+ 	"strings"
+ 	"time"
+ )
+@@ -48,6 +50,26 @@ func (s *service) NewProxy(req NewProxyReq) (any, error) {
+ 	if reqCode != tunnelCode || tunnelCode == "" {
+ 		return nil, errors.New("unauthorized")
+ 	}
++	if req.Content.User.Metas.User != req.Content.Metas.User || req.Content.User.Metas.Password != req.Content.Metas.Password {
++		return nil, errors.New("invalid provider identity")
++	}
++	db, _, _ := repository.Get("")
++	switch req.Content.ProxyType {
++	case "tcp", "udp":
++		t := db.GostClientForward
++		f, err := t.Where(t.Code.Eq(tunnelCode), t.Enable.Eq(1)).First()
++		if err != nil || req.Content.ProxyName != tunnelCode+"_"+req.Content.ProxyType || f.Port != strconv.Itoa(req.Content.RemotePort) {
++			return nil, errors.New("unregistered port")
++		}
++	case "xtcp", "stcp":
++		t := db.GostClientP2P
++		p, err := t.Preload(t.Node).Where(t.Code.Eq(tunnelCode), t.Enable.Eq(1)).First()
++		if err != nil || req.Content.ProxyName != tunnelCode+"_p2p"+req.Content.ProxyType || (req.Content.ProxyType == "stcp" && (p.Forward != 1 || p.Node.P2PDisableForward == 1)) {
++			return nil, errors.New("unregistered private tunnel")
++		}
++	default:
++		return nil, errors.New("unsupported proxy")
++	}
+ 	result := cache2.GetTunnelInfo(tunnelCode)
+ 	if result.Code == "" || (result.ExpAt < now.Unix() && result.ChargingTye == model.GOST_CONFIG_CHARGING_CUCLE_DAY) {
+ 		return nil, errors.New("expired")
+diff --git a/server/service/public/frp/service.newUserConn.go b/server/service/public/frp/service.newUserConn.go
+index 1e4f6f8..15ccf8b 100644
+--- a/server/service/public/frp/service.newUserConn.go
++++ b/server/service/public/frp/service.newUserConn.go
+@@ -31,7 +31,7 @@ type NewUserConnReq struct {
+ func (s *service) NewUserConn(req NewUserConnReq) (any, error) {
+ 	now := time.Now()
+ 	reqCode := strings.Split(req.Content.ProxyName, "_")[0]
+-	tunnelCode := cache2.GetGostAuth(req.Content.User.Metas.User, req.Content.User.Metas.Password)
++	tunnelCode := loginCode(req.Content.User.Metas.User, req.Content.User.Metas.Password)
+ 	if tunnelCode == "" || reqCode != tunnelCode {
+ 		return nil, errors.New("unauthorized")
+ 	}
+diff --git a/server/service/public/frp/service.newWorkConn.go b/server/service/public/frp/service.newWorkConn.go
+index 21d2a7e..0273295 100644
+--- a/server/service/public/frp/service.newWorkConn.go
++++ b/server/service/public/frp/service.newWorkConn.go
+@@ -26,7 +26,7 @@ type NewWorkConnReq struct {
+ 
+ func (s *service) NewWorkConn(req NewWorkConnReq) (any, error) {
+ 	now := time.Now()
+-	tunnelCode := cache2.GetGostAuth(req.Content.User.Metas.User, req.Content.User.Metas.Password)
++	tunnelCode := loginCode(req.Content.User.Metas.User, req.Content.User.Metas.Password)
+ 	if tunnelCode == "" {
+ 		return nil, errors.New("unauthorized")
+ 	}
+diff --git a/server/service/public/frp/service.visitor.p2p.go b/server/service/public/frp/service.visitor.p2p.go
+index 92c7162..3fa4eb1 100644
+--- a/server/service/public/frp/service.visitor.p2p.go
++++ b/server/service/public/frp/service.visitor.p2p.go
+@@ -1,6 +1,7 @@
+ package service
+ 
+ import (
++	"errors"
+ 	v1 "github.com/SianHH/frp-package/pkg/config/v1"
+ 	"server/repository"
+ )
+@@ -12,11 +13,9 @@ func (s *service) VisitorP2P(key string) (P2PConfig, error) {
+ 		return P2PConfig{}, err
+ 	}
+ 
+-	auth, err := db.GostAuth.Where(db.GostAuth.TunnelCode.Eq(p2p.Code)).First()
+-	if auth == nil {
+-		return P2PConfig{}, err
++	if p2p.Enable != 1 {
++		return P2PConfig{}, errors.New("tunnel disabled")
+ 	}
+-
+ 	serverAddr, serverPort := p2p.Node.GetAddress()
+ 	result := P2PConfig{
+ 		Common: v1.ClientCommonConfig{
+@@ -29,8 +28,8 @@ func (s *service) VisitorP2P(key string) (P2PConfig, error) {
+ 				Protocol: p2p.Node.Protocol,
+ 			},
+ 			Metadatas: map[string]string{
+-				"user":     auth.User,
+-				"password": auth.Password,
++				"user":     "visitor:" + p2p.Code,
++				"password": p2p.VKey,
+ 			},
+ 			LoginFailExit: new(bool),
+ 		},
+diff --git a/server/service/public/frp/visitor_auth.go b/server/service/public/frp/visitor_auth.go
+new file mode 100644
+index 0000000..7a0933a
+--- /dev/null
++++ b/server/service/public/frp/visitor_auth.go
+@@ -0,0 +1,20 @@
++package service
++
++import (
++	"server/repository"
++	"server/repository/cache"
++	"strings"
++)
++
++func loginCode(user, pass string) string {
++	if !strings.HasPrefix(user, "visitor:") {
++		return cache.GetGostAuth(user, pass)
++	}
++	db, _, _ := repository.Get("")
++	t := db.GostClientP2P
++	obj, err := t.Where(t.Code.Eq(strings.TrimPrefix(user, "visitor:")), t.VKey.Eq(pass), t.Enable.Eq(1)).First()
++	if err != nil {
++		return ""
++	}
++	return obj.Code
++}

@@ -1,0 +1,20 @@
+[Unit]
+Description=Server AI gostc tunnel manager
+After=network.target
+[Service]
+User=aibot-tunnel
+Group=aibot-tunnel
+WorkingDirectory=/var/lib/aibot-tunnel
+EnvironmentFile=/etc/server-aibot/tunnel.env
+ExecStart=/opt/server-aibot/bin/tunnel-control -p /var/lib/aibot-tunnel
+Restart=on-failure
+UMask=0077
+StateDirectory=aibot-tunnel
+StateDirectoryMode=0700
+Environment=XDG_CACHE_HOME=/var/lib/aibot-tunnel/cache
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+[Install]
+WantedBy=multi-user.target

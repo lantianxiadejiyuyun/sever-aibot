@@ -1,0 +1,94 @@
+#!/usr/bin/python3 -IS
+"""Optional sudo entry point. No arguments, environment configuration or subprocesses."""
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import stat
+import sys
+
+
+ROOT = Path("/www/server/panel")
+DB = "data/db/firewall.db"
+TABLES = {
+    "firewall_forward": "Protocol,S_Port,T_Address,T_Port",
+    "firewall_trans": "protocol,start_port,ended_ip,ended_port",
+}
+
+
+def checked(path):
+    # Do not let the SSH account substitute a path between lstat() and open().
+    for p in (*reversed(path.parents), path):
+        s = p.lstat()
+        if not (stat.S_ISREG(s.st_mode) if p == path else stat.S_ISDIR(s.st_mode)):
+            raise ValueError("unsafe path")
+        if os.geteuid() == 0 and (s.st_mode & 0o022 or s.st_uid != 0):
+            raise ValueError("untrusted path")
+    return path
+
+
+def collect():
+    version = None
+    try:
+        with checked(ROOT / "class/common.py").open("rb") as f:
+            match = re.search(rb"""(?m)^\s*g\.version\s*=\s*['"]([0-9]+(?:\.[0-9]+){1,3})['"]""", f.read(1048576))
+            if match:
+                version = match[1].decode("ascii")
+    except (OSError, ValueError):
+        pass
+    tables = {}
+    try:
+        path = checked(ROOT / DB)
+        # SQLite may consult its journal/sidecars. Reject links or writable inputs there too.
+        for suffix in ("-wal", "-shm", "-journal"):
+            try:
+                checked(Path(str(path) + suffix))
+            except FileNotFoundError:
+                pass
+        with path.open("rb") as f:
+            wal_mode = f.read(20)[18:20] == b"\x02\x02"
+        wal = Path(str(path) + "-wal")
+        checkpointed = wal_mode and not wal.exists()
+        if wal_mode and not checkpointed and not Path(str(path) + "-shm").exists():
+            raise ValueError("WAL sidecars unavailable")
+        before = path.stat()
+        con = sqlite3.connect(path.as_uri() + ("?mode=ro&immutable=1" if checkpointed else "?mode=ro"), uri=True, timeout=1)
+        try:
+            con.execute("PRAGMA query_only=ON")
+            con.execute("PRAGMA trusted_schema=OFF")
+            for table, cols in TABLES.items():
+                schema = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+                if not schema or not re.match(r"^CREATE\s+TABLE\s", schema[0] or "", re.I):
+                    continue
+                # Reject views, virtual tables and computed columns, including generated aliases.
+                plain = {str(row[1]).lower() for row in con.execute("PRAGMA table_xinfo("+table+")") if row[6] == 0}
+                if not set(cols.lower().split(",")) <= plain:
+                    continue
+                rows = []
+                for proto, src, target, dst in con.execute("SELECT "+cols+" FROM "+table+" LIMIT 256"):
+                    proto = str(proto).lower()
+                    if proto not in ("tcp","udp","tcp/udp","tcp,udp") or not all(
+                        re.fullmatch(r"[0-9]{1,5}(?:[-:][0-9]{1,5})?",str(p)) for p in (src,dst)
+                    ):
+                        raise ValueError("unsupported forwarding fields")
+                    rows.append([proto, src, str(ipaddress.ip_address(str(target))), dst])
+                tables[DB+":"+table] = rows
+        finally:
+            con.close()
+        if checkpointed:
+            after = path.stat()
+            if wal.exists() or (before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_ino,after.st_size,after.st_mtime_ns):
+                tables.clear()
+    except (OSError, ValueError, sqlite3.Error):
+        pass
+    return {"version":version, "rules":tables}
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 1:
+        sys.exit(64)
+    result = collect()
+    print(json.dumps(result))
+    sys.exit(0 if result["version"] or result["rules"] else 1)

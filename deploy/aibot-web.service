@@ -1,0 +1,21 @@
+[Unit]
+Description=Server AI operations console
+After=network.target aibot-tunnels.service
+Wants=aibot-tunnels.service
+[Service]
+User=aibot
+Group=aibot
+WorkingDirectory=/opt/server-aibot
+EnvironmentFile=/etc/server-aibot/platform.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/server-aibot/venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 18443 --workers 1 --no-access-log --ssl-keyfile /etc/server-aibot/tls.key --ssl-certfile /etc/server-aibot/tls.crt
+Restart=on-failure
+UMask=0077
+StateDirectory=server-aibot
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+[Install]
+WantedBy=multi-user.target
