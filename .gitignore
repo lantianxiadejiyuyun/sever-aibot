@@ -18,3 +18,4 @@ runtime/
 .pytest_cache/
 playwright-report/
 test-results/
+/docs/private/

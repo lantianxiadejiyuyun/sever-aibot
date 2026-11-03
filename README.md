@@ -2,6 +2,8 @@
 
 一个管理员通过同一套服务端和可安装的移动 Web App 管理 Linux 机器。面板提供 SSH 凭据、服务监控、巡检报告、模型和会话、部署档案，以及内置的端口转发与 P2P。前端在 `frontend/`，控制 API 在 `backend/`，穿透模块在 `tunnel/`。
 
+需求与规划见[总体规划](docs/AI服务器运维与内网穿透平台总体规划.md)、[平台需求](docs/Linux服务器AI运维平台需求文档.md)和[端口转发与 P2P 需求](docs/端口转发与P2P需求.md)。本机的宝塔安装记录和登录凭据存放在 Git 忽略的 `docs/private/` 目录。
+
 ### 在 Linux 安装
 
 需要 Python 3.10+（含 venv）、Git、OpenSSL、Node.js 22.12+ 和支持上游模块的 Go 工具链（本次构建使用 Go 1.27.3）。使用 systemd 的 Linux 主机可按以下步骤构建。Docker **只在要部署 Compose 服务的被管机上需要**，并非面板运行依赖。
