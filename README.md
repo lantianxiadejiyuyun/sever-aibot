@@ -1,5 +1,10 @@
 # AI 服务器巡检与控制服务
 
+> **Go 重写分支（`go-rewrite`）**：新的控制面在 `cmd/control`，内网 Agent 在
+> `cmd/agent`，公网中继节点在 `cmd/node`，Vue 控制台在 `web/`，接口与数据面
+> 说明见 [Go 控制面运行与 API](docs/Go控制面API.md)。下文 Python 版本说明保留在
+> `v0-python` 标签，便于对照与回退。
+
 一个管理员通过同一套服务端和可安装的移动 Web App 管理 Linux 机器。面板提供 SSH 凭据、服务监控、巡检报告、模型和会话、部署档案，以及内置的端口转发与 P2P。前端在 `frontend/`，控制 API 在 `backend/`，穿透模块在 `tunnel/`。
 
 需求与规划见[总体规划](docs/AI服务器运维与内网穿透平台总体规划.md)、[平台需求](docs/Linux服务器AI运维平台需求文档.md)和[端口转发与 P2P 需求](docs/端口转发与P2P需求.md)。本机的宝塔安装记录和登录凭据存放在 Git 忽略的 `docs/private/` 目录。

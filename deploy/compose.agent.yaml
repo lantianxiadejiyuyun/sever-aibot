@@ -1,0 +1,25 @@
+services:
+  agent:
+    image: server-aibot-agent:local
+    build:
+      context: ./source
+      dockerfile: deploy/Dockerfile.agent
+    container_name: server-aibot-agent
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ./agent.env
+    environment:
+      AIBOT_AGENT_STATE: /state
+    volumes:
+      - ./state:/state
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

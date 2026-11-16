@@ -1,0 +1,26 @@
+[Unit]
+Description=AI operations control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=server-aibot
+Group=server-aibot
+EnvironmentFile=/etc/server-aibot/control.env
+ExecStart=/opt/server-aibot/bin/control
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/server-aibot
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

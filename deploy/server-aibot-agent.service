@@ -1,0 +1,25 @@
+[Unit]
+Description=AI operations agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=server-aibot-agent
+Group=server-aibot-agent
+EnvironmentFile=/etc/server-aibot/agent.env
+ExecStart=/opt/server-aibot/bin/agent
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/server-aibot-agent
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

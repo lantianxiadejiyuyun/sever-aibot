@@ -1,0 +1,2119 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-theme-mode="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>AIBOT · OPS CONSOLE</title>
+<script>
+/* 首次渲染前确定主题，避免闪烁：auto 跟随浏览器/系统 */
+(function(){
+  var mode = 'auto';
+  try { mode = localStorage.getItem('aibot-theme-mode') || 'auto'; } catch(e) {}
+  if (mode !== 'light' && mode !== 'dark') mode = 'auto';
+  var dark = mode === 'dark' ||
+    (mode === 'auto' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  document.documentElement.dataset.themeMode = mode;
+})();
+</script>
+<style>
+  :root{
+    --bg:#070b11;
+    --bg-2:#0a1018;
+    --panel:rgba(14,22,32,.72);
+    --panel-solid:#0e1620;
+    --panel-2:rgba(19,29,41,.72);
+    --line:rgba(120,170,200,.14);
+    --line-2:rgba(120,170,200,.08);
+    --text:#dce8f2;
+    --text-2:#9fb2c5;
+    --muted:#63788d;
+    --accent:#35e6cf;
+    --accent-2:#5b8cff;
+    --accent-3:#9d7bff;
+    --ok:#3ee08f;
+    --warn:#f5b84b;
+    --crit:#ff6b81;
+    --shadow:0 18px 50px rgba(0,0,0,.45);
+    --r:16px;
+    --r-sm:10px;
+    --mono:"JetBrains Mono","SFMono-Regular",Consolas,"Liberation Mono",monospace;
+    --sans:"Inter","SF Pro Display","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  }
+  html[data-theme="light"]{
+    --bg:#eef3f8;
+    --bg-2:#e7eef6;
+    --panel:rgba(255,255,255,.78);
+    --panel-solid:#ffffff;
+    --panel-2:rgba(255,255,255,.9);
+    --line:rgba(20,60,90,.14);
+    --line-2:rgba(20,60,90,.07);
+    --text:#10202f;
+    --text-2:#40566b;
+    --muted:#6d8195;
+    --accent:#0aa99a;
+    --accent-2:#3f6fe8;
+    --accent-3:#7c5cf0;
+    --ok:#0f9f62;
+    --warn:#b97900;
+    --crit:#d92d4b;
+    --shadow:0 18px 45px rgba(30,60,90,.12);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;overflow-x:hidden;
+  }
+  body::after{
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:99;
+    background:repeating-linear-gradient(0deg,rgba(255,255,255,.016) 0 1px,transparent 1px 3px);
+    opacity:.5;
+  }
+  html[data-theme="light"] body::after{opacity:.12}
+  .bg-grid{
+    position:fixed;inset:0;z-index:-2;
+    background-image:linear-gradient(rgba(53,230,207,.055) 1px,transparent 1px),linear-gradient(90deg,rgba(53,230,207,.055) 1px,transparent 1px);
+    background-size:56px 56px;
+    mask-image:radial-gradient(ellipse at 50% 0%,#000 0%,transparent 72%);
+    -webkit-mask-image:radial-gradient(ellipse at 50% 0%,#000 0%,transparent 72%);
+  }
+  .bg-glow{
+    position:fixed;inset:0;z-index:-1;pointer-events:none;
+    background:
+      radial-gradient(680px 420px at 12% -5%,rgba(53,230,207,.12),transparent 62%),
+      radial-gradient(760px 480px at 88% 8%,rgba(91,140,255,.11),transparent 64%),
+      radial-gradient(520px 360px at 55% 105%,rgba(157,123,255,.07),transparent 65%);
+  }
+  a{color:inherit;text-decoration:none}
+  button{font:inherit;color:inherit}
+  ::selection{background:rgba(53,230,207,.28)}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:rgba(120,170,200,.18);border-radius:10px;border:3px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  .icon{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+  .icon.sm{width:15px;height:15px}
+  .icon.lg{width:22px;height:22px}
+
+  .app{display:flex;min-height:100dvh}
+
+  /* ---------- sidebar ---------- */
+  .sidebar{
+    width:248px;flex:none;position:sticky;top:0;height:100dvh;z-index:20;
+    display:flex;flex-direction:column;padding:22px 14px 16px;
+    background:linear-gradient(180deg,rgba(10,16,24,.86),rgba(8,13,20,.72));
+    border-right:1px solid var(--line-2);backdrop-filter:blur(18px);
+  }
+  html[data-theme="light"] .sidebar{background:linear-gradient(180deg,rgba(255,255,255,.86),rgba(245,249,253,.72))}
+  .brand{display:flex;align-items:center;gap:12px;padding:4px 10px 24px}
+  .brand-mark{
+    width:38px;height:38px;border-radius:11px;position:relative;flex:none;
+    background:linear-gradient(145deg,rgba(53,230,207,.18),rgba(91,140,255,.12));
+    border:1px solid rgba(53,230,207,.38);box-shadow:0 0 24px rgba(53,230,207,.18),inset 0 0 18px rgba(53,230,207,.08);
+    display:grid;place-items:center;
+  }
+  .brand-mark::before{content:"";width:16px;height:16px;border:2px solid var(--accent);border-radius:5px;transform:rotate(45deg);box-shadow:0 0 12px rgba(53,230,207,.6)}
+  .brand-mark::after{content:"";position:absolute;width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);animation:pulse 2.6s infinite}
+  .brand-text strong{display:block;font-size:15px;letter-spacing:.22em;font-weight:650}
+  .brand-text small{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.24em;color:var(--muted);margin-top:3px}
+  .nav-label{font-family:var(--mono);font-size:9px;letter-spacing:.22em;color:var(--muted);padding:16px 12px 8px}
+  .nav-item{
+    display:flex;align-items:center;gap:11px;height:40px;padding:0 12px;border-radius:10px;
+    color:var(--text-2);font-size:13.5px;position:relative;transition:.18s ease;cursor:pointer;
+  }
+  .nav-item:hover{background:rgba(120,170,200,.07);color:var(--text)}
+  .nav-item.active{
+    color:var(--text);background:linear-gradient(90deg,rgba(53,230,207,.13),rgba(53,230,207,.02));
+    box-shadow:inset 0 0 0 1px rgba(53,230,207,.16);
+  }
+  .nav-item.active::before{
+    content:"";position:absolute;left:-14px;top:9px;bottom:9px;width:2px;border-radius:2px;
+    background:var(--accent);box-shadow:0 0 12px var(--accent);
+  }
+  .nav-item.active .icon{color:var(--accent);filter:drop-shadow(0 0 6px rgba(53,230,207,.45))}
+  .nav-badge{margin-left:auto;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:20px;background:rgba(255,107,129,.14);color:var(--crit);border:1px solid rgba(255,107,129,.25)}
+  .sidebar-foot{margin-top:auto;padding-top:16px;border-top:1px solid var(--line-2)}
+  .user{display:flex;align-items:center;gap:10px;padding:10px;border-radius:12px;background:rgba(120,170,200,.05);border:1px solid var(--line-2)}
+  .avatar{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-family:var(--mono);font-size:12px;color:#04110f;background:linear-gradient(145deg,var(--accent),#7ef2e3);box-shadow:0 0 18px rgba(53,230,207,.25)}
+  .user strong{display:block;font-size:12.5px;font-weight:600}
+  .user small{display:block;font-size:10.5px;color:var(--muted);margin-top:2px}
+  .user .icon-btn{margin-left:auto}
+
+  /* ---------- main ---------- */
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .topbar{
+    height:66px;position:sticky;top:0;z-index:15;display:flex;align-items:center;gap:18px;
+    padding:0 28px;border-bottom:1px solid var(--line-2);
+    background:rgba(8,13,20,.62);backdrop-filter:blur(18px);
+  }
+  html[data-theme="light"] .topbar{background:rgba(255,255,255,.66)}
+  .crumb{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--muted);white-space:nowrap}
+  .crumb b{color:var(--text);font-weight:550}
+  .crumb .sep{opacity:.4}
+  .top-actions{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .sys-badge{
+    display:flex;align-items:center;gap:8px;height:30px;padding:0 11px;border-radius:8px;
+    font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--ok);
+    background:rgba(62,224,143,.08);border:1px solid rgba(62,224,143,.22);
+  }
+  .clock{font-family:var(--mono);font-size:11.5px;color:var(--text-2);letter-spacing:.08em;padding:0 4px}
+  .search{
+    display:flex;align-items:center;gap:9px;width:220px;height:34px;padding:0 11px;border-radius:9px;
+    background:rgba(120,170,200,.06);border:1px solid var(--line-2);color:var(--muted);font-size:12px;
+    transition:.18s ease;
+  }
+  .search:focus-within{border-color:rgba(53,230,207,.4);box-shadow:0 0 0 3px rgba(53,230,207,.08)}
+  .search input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--text);font:inherit}
+  .search kbd{font-family:var(--mono);font-size:9.5px;padding:2px 5px;border-radius:4px;border:1px solid var(--line);color:var(--muted)}
+  .icon-btn{
+    width:34px;height:34px;display:grid;place-items:center;border-radius:9px;border:1px solid var(--line-2);
+    background:rgba(120,170,200,.05);color:var(--text-2);cursor:pointer;transition:.18s ease;position:relative;
+  }
+  .icon-btn:hover{color:var(--text);border-color:var(--line);background:rgba(120,170,200,.1)}
+  .icon-btn .dot{position:absolute;top:7px;right:7px;width:5px;height:5px;border-radius:50%;background:var(--crit);box-shadow:0 0 7px var(--crit)}
+  .avatar-btn{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:linear-gradient(145deg,rgba(53,230,207,.2),rgba(91,140,255,.16));border:1px solid rgba(53,230,207,.3);font-family:var(--mono);font-size:11px;color:var(--accent)}
+  .mobile-menu{display:none}
+
+  /* ---------- pages ---------- */
+  .pages{padding:28px;max-width:1480px;width:100%;margin:0 auto}
+  .page{display:none;animation:pageIn .32s cubic-bezier(.2,.7,.2,1)}
+  .page.active{display:block}
+  @keyframes pageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .page-head{display:flex;align-items:flex-end;gap:18px;margin-bottom:22px;flex-wrap:wrap}
+  .eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.24em;color:var(--accent);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .eyebrow::before{content:"";width:18px;height:1px;background:linear-gradient(90deg,var(--accent),transparent)}
+  h1{font-size:27px;line-height:1.15;margin:0;font-weight:620;letter-spacing:-.02em}
+  .sub{margin:7px 0 0;color:var(--muted);font-size:12.5px}
+  .page-actions{margin-left:auto;display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:7px;height:36px;padding:0 13px;border-radius:9px;
+    border:1px solid var(--line);background:rgba(120,170,200,.06);color:var(--text-2);cursor:pointer;
+    font-size:12.5px;transition:.18s ease;white-space:nowrap;
+  }
+  .btn:hover{color:var(--text);background:rgba(120,170,200,.11)}
+  .btn.primary{
+    color:#04110f;background:linear-gradient(135deg,var(--accent),#77f0e2);border-color:transparent;
+    box-shadow:0 0 22px rgba(53,230,207,.22),inset 0 1px 0 rgba(255,255,255,.4);font-weight:600;
+  }
+  .btn.primary:hover{box-shadow:0 0 30px rgba(53,230,207,.32)}
+  .btn.ghost{background:transparent}
+  .btn.sm{height:30px;padding:0 10px;font-size:11.5px;border-radius:7px}
+
+  /* ---------- grids / panels ---------- */
+  .grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
+  .col-3{grid-column:span 3}.col-4{grid-column:span 4}.col-5{grid-column:span 5}
+  .col-6{grid-column:span 6}.col-7{grid-column:span 7}.col-8{grid-column:span 8}
+  .col-9{grid-column:span 9}.col-12{grid-column:span 12}
+  .stack{display:flex;flex-direction:column;gap:16px}
+
+  .panel{
+    position:relative;background:linear-gradient(160deg,var(--panel),rgba(10,17,26,.55));
+    border:1px solid var(--line);border-radius:var(--r);backdrop-filter:blur(14px);
+    box-shadow:var(--shadow);overflow:hidden;
+  }
+  html[data-theme="light"] .panel{background:linear-gradient(160deg,rgba(255,255,255,.92),rgba(248,251,255,.78))}
+  .panel::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;background:linear-gradient(90deg,transparent,rgba(53,230,207,.5),transparent);opacity:.5}
+  .panel::after{
+    content:"";position:absolute;right:10px;bottom:10px;width:9px;height:9px;
+    border-right:1px solid rgba(53,230,207,.4);border-bottom:1px solid rgba(53,230,207,.4);pointer-events:none;
+  }
+  .panel-head{display:flex;align-items:center;gap:12px;padding:17px 19px 0}
+  .panel-title{font-size:13px;font-weight:600;letter-spacing:.02em}
+  .panel-sub{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--muted);margin-top:4px}
+  .panel-head .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .panel-body{padding:16px 19px 19px}
+  .panel-body.flush{padding:0}
+  .lead{color:var(--text-2);font-size:12.5px;line-height:1.65}
+
+  /* stat tiles */
+  .stat{position:relative;padding:17px 18px 15px;overflow:hidden}
+  .stat-top{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:11px;letter-spacing:.06em}
+  .stat-top .icon{color:var(--accent);opacity:.9}
+  .stat-value{font-family:var(--mono);font-size:29px;font-weight:500;letter-spacing:-.04em;margin:12px 0 2px;line-height:1}
+  .stat-value small{font-size:12px;color:var(--muted);letter-spacing:0;margin-left:4px}
+  .stat-foot{display:flex;align-items:center;gap:8px;justify-content:space-between;margin-top:11px}
+  .delta{font-family:var(--mono);font-size:10.5px;display:inline-flex;align-items:center;gap:4px}
+  .delta.up{color:var(--ok)}.delta.down{color:var(--crit)}.delta.flat{color:var(--muted)}
+  .spark{height:28px;width:104px;opacity:.95}
+
+  /* pills / leds */
+  .pill{
+    display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:6px;
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;white-space:nowrap;
+    border:1px solid var(--line);color:var(--text-2);background:rgba(120,170,200,.06);
+  }
+  .pill.ok{color:var(--ok);border-color:rgba(62,224,143,.25);background:rgba(62,224,143,.08)}
+  .pill.warn{color:var(--warn);border-color:rgba(245,184,75,.25);background:rgba(245,184,75,.08)}
+  .pill.crit{color:var(--crit);border-color:rgba(255,107,129,.25);background:rgba(255,107,129,.08)}
+  .pill.info{color:var(--accent-2);border-color:rgba(91,140,255,.25);background:rgba(91,140,255,.08)}
+  .pill.muted{color:var(--muted)}
+  .led{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted);box-shadow:0 0 0 3px rgba(120,170,200,.08)}
+  .led.ok{background:var(--ok);box-shadow:0 0 9px var(--ok),0 0 0 3px rgba(62,224,143,.1)}
+  .led.warn{background:var(--warn);box-shadow:0 0 9px var(--warn),0 0 0 3px rgba(245,184,75,.1)}
+  .led.crit{background:var(--crit);box-shadow:0 0 9px var(--crit),0 0 0 3px rgba(255,107,129,.1);animation:pulse 1.8s infinite}
+  .led.pulse{animation:pulse 2.2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  /* charts */
+  .chart{width:100%;display:block;overflow:visible}
+  .chart-wrap{position:relative;width:100%}
+  .chart-legend{display:flex;gap:14px;align-items:center;font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+  .legend-dot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:6px;box-shadow:0 0 8px currentColor}
+  .chart-axis{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:6px;letter-spacing:.04em}
+  .chart-grid{stroke:currentColor;stroke-opacity:.08}
+  .chart-line{fill:none;vector-effect:non-scaling-stroke}
+
+  /* tables */
+  .table-wrap{width:100%;overflow:auto}
+  table.table{width:100%;border-collapse:collapse;font-size:12.3px}
+  table.table th{
+    text-align:left;font-family:var(--mono);font-size:9px;letter-spacing:.14em;color:var(--muted);
+    font-weight:500;padding:10px 14px;border-bottom:1px solid var(--line-2);white-space:nowrap;
+  }
+  table.table td{padding:12px 14px;border-bottom:1px solid var(--line-2);vertical-align:middle}
+  table.table tr:last-child td{border-bottom:0}
+  table.table tbody tr{transition:.15s ease}
+  table.table tbody tr:hover{background:rgba(120,170,200,.045)}
+  .mono{font-family:var(--mono);font-size:11.5px;letter-spacing:.02em}
+  .muted{color:var(--muted)}
+  .text-2{color:var(--text-2)}
+  .nowrap{white-space:nowrap}
+  .row-main{display:flex;align-items:center;gap:10px}
+  .row-title{font-size:12.5px;font-weight:550}
+  .row-sub{font-size:10.5px;color:var(--muted);margin-top:3px}
+
+  /* bars */
+  .bar{height:5px;border-radius:8px;background:rgba(120,170,200,.1);overflow:hidden;position:relative}
+  .bar > i{display:block;height:100%;border-radius:8px;background:linear-gradient(90deg,var(--accent),#7ef2e3);box-shadow:0 0 10px rgba(53,230,207,.35)}
+  .bar.warn > i{background:linear-gradient(90deg,var(--warn),#ffd37a);box-shadow:0 0 10px rgba(245,184,75,.3)}
+  .bar.crit > i{background:linear-gradient(90deg,var(--crit),#ff9aa8);box-shadow:0 0 10px rgba(255,107,129,.3)}
+  .bar-row{display:flex;align-items:center;gap:10px}
+  .bar-row .bar{flex:1}
+  .bar-row .pct{width:38px;text-align:right;font-family:var(--mono);font-size:10.5px;color:var(--text-2)}
+
+  /* chips */
+  .chips{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  .chip{
+    display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:7px;
+    border:1px solid var(--line-2);background:rgba(120,170,200,.05);color:var(--muted);font-size:11px;cursor:pointer;transition:.16s ease;
+  }
+  .chip:hover{color:var(--text-2);border-color:var(--line)}
+  .chip.active{color:var(--accent);border-color:rgba(53,230,207,.35);background:rgba(53,230,207,.08)}
+  .tag{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:5px;background:rgba(120,170,200,.07);color:var(--muted);font-size:10px;font-family:var(--mono)}
+
+  /* alert rows */
+  .alert-row{display:flex;gap:12px;padding:13px 0;border-bottom:1px solid var(--line-2)}
+  .alert-row:last-child{border-bottom:0;padding-bottom:0}
+  .alert-row:first-child{padding-top:0}
+  .alert-icon{width:30px;height:30px;border-radius:8px;flex:none;display:grid;place-items:center;background:rgba(255,107,129,.08);color:var(--crit);border:1px solid rgba(255,107,129,.2)}
+  .alert-icon.warn{background:rgba(245,184,75,.08);color:var(--warn);border-color:rgba(245,184,75,.2)}
+  .alert-icon.info{background:rgba(91,140,255,.08);color:var(--accent-2);border-color:rgba(91,140,255,.2)}
+  .alert-main{min-width:0;flex:1}
+  .alert-title{font-size:12.3px;font-weight:550;line-height:1.35}
+  .alert-meta{font-size:10.5px;color:var(--muted);margin-top:4px}
+  .alert-row .btn{margin-left:auto;flex:none}
+
+  /* device rows */
+  .device-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line-2)}
+  .device-row:last-child{border-bottom:0;padding-bottom:0}
+  .device-row:first-child{padding-top:0}
+  .device-ico{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:rgba(53,230,207,.07);border:1px solid rgba(53,230,207,.16);color:var(--accent);flex:none}
+  .device-main{min-width:0;flex:1}
+  .device-name{font-size:12.5px;font-weight:550;display:flex;align-items:center;gap:8px}
+  .device-meta{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:3px}
+  .device-bars{display:flex;gap:14px;width:190px;flex:none}
+  .device-bars .bar-box{flex:1}
+  .bar-label{font-family:var(--mono);font-size:8.5px;color:var(--muted);margin-bottom:4px;display:flex;justify-content:space-between}
+
+  /* quick terminal */
+  .terminal{
+    background:#060a10;border:1px solid rgba(53,230,207,.16);border-radius:12px;overflow:hidden;
+    font-family:var(--mono);font-size:11px;line-height:1.75;color:#9fe9df;
+    box-shadow:inset 0 0 40px rgba(53,230,207,.035);
+  }
+  .term-bar{display:flex;align-items:center;gap:6px;padding:9px 12px;border-bottom:1px solid rgba(120,170,200,.1);background:rgba(255,255,255,.02)}
+  .term-bar i{width:7px;height:7px;border-radius:50%;background:#2b3a49}
+  .term-bar i:first-child{background:#ff6b81}.term-bar i:nth-child(2){background:#f5b84b}.term-bar i:nth-child(3){background:#3ee08f}
+  .term-bar span{margin-left:6px;color:var(--muted);font-size:9.5px;letter-spacing:.1em}
+  .term-body{padding:12px 14px}
+  .term-body .c{color:#5b8cff}.term-body .g{color:#3ee08f}.term-body .d{color:#63788d}
+  .cursor{display:inline-block;width:6px;height:12px;background:var(--accent);vertical-align:-2px;animation:pulse 1.1s steps(2) infinite}
+
+  /* nodes */
+  .node-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .node-card{padding:14px;border:1px solid var(--line-2);border-radius:12px;background:rgba(120,170,200,.04);min-width:0}
+  .node-head{display:flex;align-items:center;gap:8px}
+  .node-name{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .node-meta{font-family:var(--mono);font-size:9.5px;color:var(--muted);margin-top:6px;line-height:1.55;word-break:break-all}
+  .node-badges{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px}
+  .node-badge{font-family:var(--mono);font-size:8.5px;padding:2px 6px;border:1px solid var(--line);border-radius:5px;color:var(--text-2);white-space:nowrap}
+  .bar{height:5px;border-radius:5px;background:rgba(120,170,200,.12);overflow:hidden;margin-top:11px}
+  .bar > i{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+
+  /* asset cards */
+  .asset-card{padding:16px 17px}
+  .asset-head{display:flex;align-items:flex-start;gap:11px}
+  .asset-ico{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:rgba(91,140,255,.08);border:1px solid rgba(91,140,255,.2);color:var(--accent-2);flex:none}
+  .asset-name{font-size:13px;font-weight:600}
+  .asset-ip{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:4px}
+  .asset-path{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:14px}
+  .path-chip{font-family:var(--mono);font-size:9px;padding:3px 6px;border-radius:4px;background:rgba(120,170,200,.07);color:var(--text-2);border:1px solid var(--line-2)}
+  .path-chip.accent{color:var(--accent);border-color:rgba(53,230,207,.22);background:rgba(53,230,207,.06)}
+  .path-arrow{color:var(--muted);font-size:10px}
+  .asset-foot{display:flex;align-items:center;gap:8px;margin-top:14px;padding-top:13px;border-top:1px solid var(--line-2)}
+
+  /* vault rows */
+  .vault-row{display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid var(--line-2)}
+  .vault-row:last-child{border-bottom:0;padding-bottom:0}
+  .vault-row:first-child{padding-top:0}
+  .vault-ico{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:rgba(157,123,255,.08);border:1px solid rgba(157,123,255,.2);color:var(--accent-3);flex:none}
+  .vault-main{min-width:0;flex:1}
+  .vault-name{font-size:12.5px;font-weight:550}
+  .vault-meta{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap}
+  .vault-secret{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.14em;width:150px;text-align:right;flex:none}
+  html[data-theme="light"] .vault-secret{color:#8194a8}
+
+  /* inspection */
+  .score-wrap{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  .ring{width:126px;height:126px;flex:none}
+  .ring-text{font-family:var(--mono);font-size:20px;fill:var(--text);font-weight:500}
+  .ring-sub{font-family:var(--mono);font-size:7px;fill:var(--muted);letter-spacing:.16em}
+  .findings{display:flex;flex-direction:column}
+  .finding{display:flex;gap:12px;padding:13px 0;border-bottom:1px solid var(--line-2)}
+  .finding:last-child{border-bottom:0;padding-bottom:0}
+  .finding:first-child{padding-top:0}
+  .finding-sev{width:4px;border-radius:4px;flex:none;background:var(--muted)}
+  .finding-sev.crit{background:var(--crit);box-shadow:0 0 10px var(--crit)}
+  .finding-sev.warn{background:var(--warn);box-shadow:0 0 10px var(--warn)}
+  .finding-sev.info{background:var(--accent-2);box-shadow:0 0 10px var(--accent-2)}
+  .finding-main{min-width:0;flex:1}
+  .finding-title{font-size:12.3px;font-weight:550}
+  .finding-meta{font-size:10.5px;color:var(--muted);margin-top:4px}
+  .finding-code{font-family:var(--mono);font-size:10px;color:var(--text-2);background:rgba(120,170,200,.05);border:1px solid var(--line-2);border-radius:6px;padding:6px 8px;margin-top:7px;white-space:pre-wrap;word-break:break-all}
+
+  /* feishu */
+  .fs-card{border:1px solid rgba(245,184,75,.34);border-radius:12px;overflow:hidden;background:linear-gradient(180deg,rgba(245,184,75,.10),rgba(7,11,17,0))}
+  html[data-theme="light"] .fs-card{background:linear-gradient(180deg,rgba(245,184,75,.16),#fff)}
+  .fs-head{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--line-2)}
+  .fs-head .bar{width:3px;height:18px;border-radius:3px;background:var(--warn);box-shadow:0 0 9px var(--warn);flex:none}
+  .fs-title{font-size:12.8px;font-weight:600}
+  .fs-body{padding:14px 15px;display:flex;flex-direction:column;gap:11px}
+  .fs-row{display:flex;gap:16px;flex-wrap:wrap}
+  .fs-field{flex:1;min-width:110px}
+  .fs-k{font-family:var(--mono);font-size:9px;letter-spacing:.12em;color:var(--muted)}
+  .fs-v{font-size:11.5px;margin-top:3px;color:var(--text-2);line-height:1.5}
+  .fs-actions{display:flex;gap:8px;flex-wrap:wrap;padding:0 15px 14px}
+  .fs-btn{font-size:11px;padding:7px 12px;border-radius:7px;border:1px solid var(--line);color:var(--text-2);background:var(--panel-2);cursor:pointer}
+  .fs-btn.primary{background:rgba(53,230,207,.14);border-color:rgba(53,230,207,.42);color:var(--accent)}
+  .fs-foot{font-family:var(--mono);font-size:9.5px;color:var(--muted);padding:9px 15px;border-top:1px solid var(--line-2);letter-spacing:.05em}
+
+  /* timeline */
+  .timeline{position:relative;padding-left:18px}
+  .timeline::before{content:"";position:absolute;left:4px;top:6px;bottom:6px;width:1px;background:linear-gradient(180deg,rgba(53,230,207,.4),rgba(120,170,200,.08))}
+  .tl-item{position:relative;padding:0 0 18px 12px}
+  .tl-item:last-child{padding-bottom:0}
+  .tl-item::before{content:"";position:absolute;left:-18px;top:4px;width:7px;height:7px;border-radius:50%;background:var(--bg);border:1.5px solid var(--accent);box-shadow:0 0 10px rgba(53,230,207,.5)}
+  .tl-time{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.08em}
+  .tl-title{font-size:12px;margin-top:4px}
+  .tl-sub{font-size:10.5px;color:var(--muted);margin-top:3px}
+
+  /* ---------- AI ops ---------- */
+  .chat-panel{display:flex;flex-direction:column;min-height:700px}
+  .chat-head{display:flex;align-items:center;gap:10px;padding:15px 19px;border-bottom:1px solid var(--line-2);flex-wrap:wrap}
+  .model-pill{display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 10px;border-radius:8px;border:1px solid rgba(53,230,207,.25);background:rgba(53,230,207,.06);font-family:var(--mono);font-size:10.5px;color:var(--accent)}
+  .ctx{margin-left:auto;display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:9.5px;color:var(--muted)}
+  .ctx-bar{width:110px;height:5px;border-radius:6px;background:rgba(120,170,200,.12);overflow:hidden}
+  .ctx-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));box-shadow:0 0 8px rgba(53,230,207,.4)}
+  .messages{padding:20px 19px;display:flex;flex-direction:column;gap:18px;flex:1;overflow:auto;max-height:540px}
+  .msg{display:flex;gap:11px;max-width:94%}
+  .msg.user{align-self:flex-end;flex-direction:row-reverse}
+  .msg-avatar{width:30px;height:30px;border-radius:8px;flex:none;display:grid;place-items:center;background:rgba(53,230,207,.08);border:1px solid rgba(53,230,207,.2);color:var(--accent);font-family:var(--mono);font-size:9px}
+  .msg.user .msg-avatar{background:rgba(91,140,255,.1);border-color:rgba(91,140,255,.22);color:var(--accent-2)}
+  .msg-bubble{background:rgba(120,170,200,.05);border:1px solid var(--line-2);border-radius:12px;padding:11px 13px;font-size:12.3px;line-height:1.68;color:var(--text-2)}
+  .msg.user .msg-bubble{background:rgba(53,230,207,.07);border-color:rgba(53,230,207,.18);color:var(--text)}
+  .msg-bubble b{color:var(--text);font-weight:600}
+  .tool-card{margin-top:9px;border:1px solid rgba(91,140,255,.2);background:rgba(91,140,255,.045);border-radius:9px;overflow:hidden}
+  .tool-head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line-2);font-family:var(--mono);font-size:9.5px;color:var(--accent-2);letter-spacing:.04em}
+  .tool-body{padding:9px 10px;font-family:var(--mono);font-size:10.5px;line-height:1.7;color:var(--text-2)}
+  .tool-body .k{color:var(--muted)}.tool-body .v{color:var(--text)}
+  .tool-body .ok{color:var(--ok)}.tool-body .warn{color:var(--warn)}.tool-body .crit{color:var(--crit)}
+  .approval{margin-top:10px;border:1px solid rgba(245,184,75,.3);background:rgba(245,184,75,.05);border-radius:10px;padding:11px 12px}
+  .approval-head{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--warn);font-weight:600;flex-wrap:wrap}
+  .approval-body{font-family:var(--mono);font-size:10.5px;color:var(--text-2);margin-top:7px;line-height:1.65}
+  .diff{background:rgba(3,7,11,.45);border:1px solid var(--line-2);border-radius:7px;padding:8px 10px;margin-top:8px;font-family:var(--mono);font-size:10px;line-height:1.7;color:var(--text-2);white-space:pre-wrap}
+  html[data-theme="light"] .diff{background:rgba(240,246,252,.9)}
+  .diff .add{color:var(--ok)}.diff .del{color:var(--crit)}
+  .approval-actions{display:flex;gap:7px;margin-top:9px;flex-wrap:wrap}
+  .composer{border-top:1px solid var(--line-2);padding:14px 19px 17px;background:rgba(5,9,14,.35)}
+  html[data-theme="light"] .composer{background:rgba(240,246,252,.6)}
+  .composer textarea{width:100%;min-height:62px;resize:none;border:1px solid var(--line);border-radius:10px;background:rgba(120,170,200,.05);color:var(--text);padding:10px 12px;outline:0;font-family:var(--sans);font-size:12.5px;line-height:1.6}
+  .composer textarea:focus{border-color:rgba(53,230,207,.4);box-shadow:0 0 0 3px rgba(53,230,207,.07)}
+  .composer-foot{display:flex;align-items:center;gap:8px;margin-top:9px;flex-wrap:wrap}
+  .composer-foot .chips{flex:1}
+  .send-btn{width:34px;height:34px;border-radius:9px;border:0;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),#77f0e2);color:#04110f;cursor:pointer;box-shadow:0 0 18px rgba(53,230,207,.25)}
+  .provider-card{padding:14px 16px}
+  .provider-head{display:flex;align-items:center;gap:10px}
+  .provider-name{font-size:12.5px;font-weight:600}
+  .provider-meta{font-family:var(--mono);font-size:9.5px;color:var(--muted);margin-top:3px}
+  .ctx-big{font-family:var(--mono);font-size:22px;letter-spacing:-.02em;margin-top:2px}
+  .ctx-big small{font-size:10px;color:var(--muted);letter-spacing:0}
+  .prompt-item{display:flex;align-items:center;gap:9px;padding:9px 0;border-bottom:1px solid var(--line-2);cursor:pointer}
+  .prompt-item:last-child{border-bottom:0;padding-bottom:0}
+  .prompt-item:first-child{padding-top:0}
+  .prompt-item:hover .prompt-name{color:var(--accent)}
+  .prompt-name{font-size:11.8px;color:var(--text-2);transition:.15s}
+  .prompt-desc{font-size:10px;color:var(--muted);margin-top:2px}
+  .usage-row{display:flex;justify-content:space-between;gap:10px;font-family:var(--mono);font-size:10px;color:var(--muted);padding:6px 0;border-bottom:1px solid var(--line-2)}
+  .usage-row:last-child{border-bottom:0}
+  .usage-row b{color:var(--text-2);font-weight:500}
+
+  /* modal */
+  .backdrop{position:fixed;inset:0;background:rgba(3,7,11,.68);backdrop-filter:blur(6px);z-index:80;opacity:0;pointer-events:none;transition:.2s ease}
+  .backdrop.show{opacity:1;pointer-events:auto}
+  .modal{
+    position:fixed;z-index:81;left:50%;top:50%;transform:translate(-50%,-46%) scale(.98);width:min(430px,calc(100vw - 32px));
+    background:linear-gradient(160deg,#0e1822,#0a1119);border:1px solid rgba(53,230,207,.22);border-radius:16px;
+    box-shadow:0 30px 90px rgba(0,0,0,.6),0 0 40px rgba(53,230,207,.06);padding:22px;
+    opacity:0;pointer-events:none;transition:.22s cubic-bezier(.2,.7,.2,1);
+  }
+  html[data-theme="light"] .modal{background:linear-gradient(160deg,#fff,#f5f9fd)}
+  .modal.show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+  .modal h3{margin:0 0 6px;font-size:16px}
+  .modal p{margin:0 0 16px;color:var(--muted);font-size:11.5px;line-height:1.6}
+  .field{margin-bottom:12px}
+  .field label{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;color:var(--muted);margin-bottom:7px}
+  .input{width:100%;height:38px;border-radius:9px;border:1px solid var(--line);background:rgba(120,170,200,.05);color:var(--text);padding:0 12px;outline:0;font-family:var(--mono);font-size:12px}
+  .input:focus{border-color:rgba(53,230,207,.45);box-shadow:0 0 0 3px rgba(53,230,207,.08)}
+  .modal-actions{display:flex;gap:9px;justify-content:flex-end;margin-top:18px}
+  .secret-reveal{font-family:var(--mono);font-size:11px;word-break:break-all;background:rgba(62,224,143,.06);border:1px solid rgba(62,224,143,.2);border-radius:8px;padding:11px;color:var(--ok);margin-top:12px;display:none}
+  .secret-reveal.show{display:block}
+
+  /* mobile */
+  .mobile-nav{display:none}
+  .sheet{position:fixed;left:0;right:0;bottom:0;z-index:70;background:linear-gradient(180deg,#0d161f,#0a1119);border-top:1px solid var(--line);border-radius:18px 18px 0 0;padding:16px 18px calc(18px + env(safe-area-inset-bottom));transform:translateY(105%);transition:.25s cubic-bezier(.2,.7,.2,1)}
+  .sheet.show{transform:none}
+  .sheet-handle{width:36px;height:3px;border-radius:3px;background:var(--line);margin:0 auto 14px}
+  .sheet-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .sheet-item{display:flex;flex-direction:column;align-items:center;gap:8px;padding:14px 6px;border-radius:12px;border:1px solid var(--line-2);background:rgba(120,170,200,.04);font-size:11px;color:var(--text-2);cursor:pointer}
+  .sheet-item .icon{color:var(--accent)}
+
+  @media (max-width:1180px){
+    .sidebar{width:214px}
+    .search{width:170px}
+    .col-3{grid-column:span 6}
+    .col-4{grid-column:span 6}
+    .col-5,.col-7{grid-column:span 12}
+    .col-8,.col-9{grid-column:span 12}
+  }
+  @media (max-width:900px){
+    .sidebar{display:none}
+    .topbar{height:58px;padding:0 16px;gap:10px}
+    .mobile-menu{display:grid}
+    .sys-badge,.clock,.search kbd{display:none}
+    .search{width:auto;flex:1;min-width:0}
+    .pages{padding:18px 14px calc(92px + env(safe-area-inset-bottom))}
+    h1{font-size:23px}
+    .page-head{align-items:flex-start}
+    .page-actions{width:100%;margin-left:0}
+    .grid{gap:12px}
+    .col-3,.col-4,.col-5,.col-6,.col-7,.col-8,.col-9{grid-column:span 12}
+    .node-strip{grid-template-columns:1fr}
+    .stat-value{font-size:26px}
+    .device-bars{width:150px}
+    .mobile-nav{
+      display:flex;position:fixed;left:0;right:0;bottom:0;z-index:60;height:calc(64px + env(safe-area-inset-bottom));
+      padding:0 8px env(safe-area-inset-bottom);
+      background:rgba(8,13,20,.9);backdrop-filter:blur(20px);border-top:1px solid var(--line-2);
+    }
+    html[data-theme="light"] .mobile-nav{background:rgba(255,255,255,.9)}
+    .mobile-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:9.5px;color:var(--muted);cursor:pointer;position:relative}
+    .mobile-item.active{color:var(--accent)}
+    .mobile-item.active::before{content:"";position:absolute;top:0;width:22px;height:2px;border-radius:2px;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+    .mobile-item .icon{width:20px;height:20px}
+    .btn.primary{box-shadow:0 0 18px rgba(53,230,207,.18)}
+  }
+  @media (max-width:640px){
+    .col-3{grid-column:span 6}
+    .page-head{gap:12px}
+    .page-actions .btn{flex:1}
+    .panel-head{padding:15px 15px 0}
+    .panel-body{padding:14px 15px 16px}
+    .stat{padding:14px 14px 12px}
+    .stat-value{font-size:24px}
+    .spark{width:78px}
+    .device-bars{display:none}
+    .vault-secret{display:none}
+    .alert-row .btn{display:none}
+    table.table thead{display:none}
+    table.table,table.table tbody,table.table tr,table.table td{display:block;width:100%}
+    table.table tr{padding:11px 14px;border-bottom:1px solid var(--line-2)}
+    table.table tr:last-child{border-bottom:0}
+    table.table td{border:0;padding:3px 0;display:flex;justify-content:space-between;gap:14px}
+    table.table td::before{content:attr(data-label);font-family:var(--mono);font-size:9px;color:var(--muted);letter-spacing:.1em;flex:none}
+    table.table tr:hover{background:transparent}
+    .asset-card{padding:14px}
+    .score-wrap{gap:16px}
+    .ring{width:104px;height:104px}
+    .sheet-grid{grid-template-columns:repeat(3,1fr)}
+  }
+  @media (max-width:900px){
+    .avatar-btn{display:none}
+    .top-actions{min-width:0}
+    .chat-panel{min-height:auto}
+    .messages{max-height:none}
+    .msg{max-width:100%}
+    .ctx{width:100%;margin-left:0;margin-top:4px}
+    .composer-foot .chips{width:100%;flex:none}
+    .composer-foot .pill{display:none}
+  }
+  /* ============================================================
+     enterprise light theme
+     参考浅色企业后台：白卡片、蓝色主色、分组侧栏、柔和阴影
+     ============================================================ */
+  :root, html[data-theme="light"]{
+    --bg:#f4f7fb; --bg-2:#eef3f9;
+    --panel:#ffffff; --panel-solid:#ffffff; --panel-2:#f8fafc;
+    --line:#e8edf4; --line-2:#f0f3f8;
+    --text:#1d2129; --text-2:#475467; --muted:#5f6b7a;
+    --accent:#1677ff; --accent-2:#13c2c2; --accent-3:#722ed1;
+    --accent-soft:#e8f3ff; --hover:#f5f8fd;
+    --ok:#00b42a; --warn:#ff7d00; --crit:#f53f3f;
+    --shadow:0 4px 16px rgba(29,42,60,.05);
+    --r:12px; --r-sm:8px;
+  }
+  html[data-theme="dark"]{
+    --bg:#0f141a; --bg-2:#121922;
+    --panel:#161d26; --panel-solid:#161d26; --panel-2:#1b2430;
+    --line:#25303d; --line-2:#1f2935;
+    --text:#eef4fa; --text-2:#bac7d5; --muted:#93a3b5;
+    --accent:#3b8cff; --accent-2:#2fd4c8; --accent-3:#9d7bff;
+    --accent-soft:rgba(59,140,255,.16); --hover:rgba(255,255,255,.05);
+    --ok:#3ddc84; --warn:#ffb020; --crit:#ff6b81;
+    --shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  body{background:var(--bg)}
+  body::after,.bg-grid,.bg-glow{display:none!important}
+  ::selection{background:rgba(22,119,255,.18)}
+
+  .sidebar{width:236px;background:var(--panel);border-right:1px solid var(--line);backdrop-filter:none;padding:18px 12px 14px}
+  html[data-theme="light"] .sidebar{background:var(--panel)}
+  .brand{padding:4px 10px 20px}
+  .brand-mark{background:var(--accent);border:0;border-radius:10px;box-shadow:none}
+  .brand-mark::before{border-color:#fff;box-shadow:none;width:14px;height:14px;border-radius:4px}
+  .brand-mark::after{display:none}
+  .brand-text strong{letter-spacing:.16em;font-size:15px}
+  .brand-text small{letter-spacing:.16em}
+  .nav-label{font-family:var(--sans);font-size:10.5px;font-weight:600;letter-spacing:.14em;color:#a3adbb;padding:18px 12px 8px}
+  .nav-item{height:42px;border-radius:8px;color:var(--text-2);font-size:13.5px}
+  .nav-item:hover{background:var(--hover);color:var(--text)}
+  .nav-item.active{background:var(--accent-soft);color:var(--accent);box-shadow:none;font-weight:600}
+  .nav-item.active::before{display:none}
+  .nav-item.active .icon{color:var(--accent);filter:none}
+  .nav-badge{background:#ffece8;border:0;color:var(--crit);font-family:var(--sans)}
+  html[data-theme="dark"] .nav-badge{background:rgba(245,63,63,.18)}
+  .sidebar-foot{border-top:1px solid var(--line-2)}
+  .user{background:var(--hover);border:1px solid transparent;border-radius:10px}
+  .avatar{background:var(--accent);color:#fff;box-shadow:none;font-family:var(--sans);font-weight:600;border-radius:50%}
+
+  .topbar{height:64px;background:var(--panel);border-bottom:1px solid var(--line);backdrop-filter:none}
+  html[data-theme="light"] .topbar{background:var(--panel)}
+  .crumb{font-size:12.5px}
+  .sys-badge{background:#e8ffea;color:#009a29;border:0;font-family:var(--sans);letter-spacing:.04em}
+  html[data-theme="dark"] .sys-badge{background:rgba(0,180,42,.14);color:#5be37d}
+  .search{background:var(--hover);border:1px solid transparent;border-radius:8px}
+  .search:focus-within{background:var(--panel);border-color:#b9d6ff;box-shadow:0 0 0 3px rgba(22,119,255,.1)}
+  .icon-btn{background:var(--hover);border:1px solid transparent;border-radius:8px}
+  .icon-btn:hover{background:var(--panel);border-color:var(--line);color:var(--text)}
+  .icon-btn .dot{box-shadow:none}
+  .avatar-btn{background:var(--accent-soft);border:0;color:var(--accent);border-radius:50%;font-family:var(--sans);font-weight:600}
+
+  .pages{padding:26px 28px}
+  .eyebrow{font-family:var(--sans);font-size:11px;font-weight:600;letter-spacing:.08em;color:var(--accent)}
+  .eyebrow::before{display:none}
+  h1{font-size:24px;font-weight:650;letter-spacing:-.01em}
+  .sub{font-size:13px;margin-top:6px}
+
+  .btn{background:var(--panel);border:1px solid var(--line);border-radius:8px;color:var(--text-2);box-shadow:none}
+  .btn:hover{background:var(--hover);color:var(--text)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:none;font-weight:600}
+  .btn.primary:hover{filter:brightness(1.06);box-shadow:0 6px 16px rgba(22,119,255,.22)}
+  .btn.ghost{background:transparent}
+  .btn.sm{border-radius:6px}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);backdrop-filter:none}
+  html[data-theme="light"] .panel{background:var(--panel)}
+  .panel::before,.panel::after{display:none}
+  .panel-head{padding:18px 20px 0}
+  .panel-title{font-size:14px;font-weight:650;letter-spacing:0}
+  .panel-sub{font-family:var(--sans);font-size:10.5px;letter-spacing:.05em;color:var(--muted);margin-top:5px}
+  .panel-body{padding:16px 20px 20px}
+  .lead{font-size:13px}
+
+  .stat{padding:18px 20px 16px}
+  .stat-top{font-size:12px;letter-spacing:0;color:var(--text-2)}
+  .stat-top .icon{color:var(--accent);opacity:1}
+  .stat-value{font-family:var(--sans);font-size:28px;font-weight:650;letter-spacing:-.02em;color:var(--text)}
+  .stat-value small{font-size:12px;font-weight:500}
+  .stat-foot{margin-top:12px}
+  .delta{font-family:var(--sans);font-size:11px}
+  .spark{opacity:1}
+
+  .pill{font-family:var(--sans);font-size:11px;letter-spacing:0;border-radius:4px;border-color:transparent;background:var(--hover);color:var(--text-2);padding:0 8px}
+  .pill.ok{background:#e8ffea;color:#009a29;border-color:transparent}
+  .pill.warn{background:#fff7e8;color:#d25f00;border-color:transparent}
+  .pill.crit{background:#ffece8;color:#d32b2b;border-color:transparent}
+  .pill.info{background:var(--accent-soft);color:#1668dc;border-color:transparent}
+  .pill.muted{background:var(--hover);color:var(--muted)}
+  html[data-theme="dark"] .pill.ok{background:rgba(0,180,42,.16);color:#5be37d}
+  html[data-theme="dark"] .pill.warn{background:rgba(255,125,0,.16);color:#ffb35c}
+  html[data-theme="dark"] .pill.crit{background:rgba(245,63,63,.16);color:#ff8a8a}
+  html[data-theme="dark"] .pill.info{background:rgba(59,140,255,.16);color:#8ab8ff}
+  .led{box-shadow:none}
+  .led.ok,.led.warn,.led.crit{box-shadow:none}
+  .led.crit{animation:none}
+
+  table.table th{font-family:var(--sans);font-size:11.5px;font-weight:600;letter-spacing:0;color:#6b7785;background:var(--panel-2);padding:11px 14px}
+  html[data-theme="dark"] table.table th{color:#9aa8b8}
+  table.table td{padding:13px 14px;border-bottom:1px solid var(--line-2)}
+  table.table tbody tr:hover{background:var(--hover)}
+  .mono{font-size:11.5px}
+
+  .bar{height:6px;background:#edf1f7}
+  html[data-theme="dark"] .bar{background:rgba(255,255,255,.08)}
+  .bar > i{background:var(--accent);box-shadow:none}
+  .bar.warn > i{background:var(--warn);box-shadow:none}
+  .bar.crit > i{background:var(--crit);box-shadow:none}
+
+  .chip{border-radius:6px;background:var(--hover);border-color:transparent;color:var(--text-2)}
+  .chip:hover{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+  .chip.active{background:var(--accent-soft);border-color:transparent;color:var(--accent);font-weight:600}
+  .tag{background:var(--hover);color:var(--muted);border-radius:4px;font-family:var(--sans);font-size:10.5px}
+
+  .device-ico{background:var(--accent-soft);border-color:transparent;color:var(--accent);border-radius:8px}
+  .alert-icon{background:#ffece8;border-color:transparent;border-radius:8px}
+  .alert-icon.warn{background:#fff7e8;border-color:transparent}
+  .alert-icon.info{background:var(--accent-soft);border-color:transparent}
+  html[data-theme="dark"] .alert-icon{background:rgba(245,63,63,.14)}
+  html[data-theme="dark"] .alert-icon.warn{background:rgba(255,125,0,.14)}
+  html[data-theme="dark"] .alert-icon.info{background:rgba(59,140,255,.14)}
+
+  .finding-sev.crit,.finding-sev.warn,.finding-sev.info{box-shadow:none}
+  .node-card{background:var(--panel-2);border-color:var(--line);border-radius:10px}
+  .node-badge{background:var(--panel);border-color:var(--line);color:var(--text-2)}
+  .fs-card{background:var(--panel);border-color:var(--line)}
+  html[data-theme="light"] .fs-card{background:var(--panel)}
+  .fs-head .bar{box-shadow:none}
+  .fs-btn{background:var(--panel);border-color:var(--line);border-radius:6px}
+  .fs-btn.primary{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+
+  .msg-avatar{background:var(--accent-soft);border-color:transparent;color:var(--accent);border-radius:8px}
+  .msg.user .msg-avatar{background:#e8fffb;border-color:transparent;color:var(--accent-2)}
+  .msg-bubble{background:var(--panel-2);border-color:var(--line);border-radius:10px;color:var(--text-2)}
+  .msg.user .msg-bubble{background:var(--accent-soft);border-color:transparent;color:var(--text)}
+  .tool-card{border-color:var(--line);background:var(--panel-2)}
+  .approval{border-color:#ffe0b8;background:#fffaf2}
+  html[data-theme="dark"] .approval{border-color:rgba(255,176,32,.3);background:rgba(255,176,32,.07)}
+  .diff{background:var(--panel-2);border-color:var(--line)}
+  .ctx-bar{background:#edf1f7}
+  .ctx-bar i{background:var(--accent);box-shadow:none}
+
+  .modal{background:var(--panel);border-color:var(--line);border-radius:12px;box-shadow:0 24px 60px rgba(29,42,60,.18)}
+  html[data-theme="light"] .modal{background:var(--panel)}
+  .field label{font-family:var(--sans);font-size:12px;letter-spacing:0;color:var(--text-2);margin-bottom:6px}
+  .input{background:var(--panel);border-color:var(--line);border-radius:8px;font-family:var(--sans);font-size:13px}
+  .input:focus{border-color:#91caff;box-shadow:0 0 0 3px rgba(22,119,255,.1)}
+  .secret-reveal{background:var(--panel-2);border-color:var(--line);color:var(--text)}
+  .backdrop{background:rgba(15,23,36,.45);backdrop-filter:blur(3px)}
+  .sheet{background:var(--panel);border-top:1px solid var(--line)}
+  .sheet-item{background:var(--panel-2);border-color:var(--line)}
+
+  @media (max-width:900px){
+    .mobile-nav{background:var(--panel);border-top:1px solid var(--line);backdrop-filter:none}
+    html[data-theme="light"] .mobile-nav{background:var(--panel)}
+    .mobile-item{color:var(--muted)}
+    .mobile-item.active{color:var(--accent)}
+    .mobile-item.active::before{background:var(--accent);box-shadow:none}
+  }
+
+  /* ---------- readability：提高小字号与对比度 ---------- */
+  .lead{font-size:13px;line-height:1.7}
+  .panel-sub,.eyebrow{font-size:11.5px;letter-spacing:.05em}
+  .nav-label{font-size:11.5px;letter-spacing:.1em}
+  .brand-text small{font-size:10.5px}
+  .nav-item{font-size:14px}
+  .nav-badge{font-size:11px;height:20px}
+  .user small{font-size:11.5px}
+  .sys-badge{font-size:11px}
+  .search input{font-size:13px}
+  .search kbd{font-size:10.5px}
+  .pill{font-size:11px;height:24px;padding:0 9px}
+  .tag{font-size:11px;height:22px;padding:0 7px}
+  .delta{font-size:11.5px}
+  .chart-legend{font-size:11px}
+  .chart-axis{font-size:10.5px;letter-spacing:.02em}
+  table.table th{font-size:12px;color:#5c6878}
+  html[data-theme="dark"] table.table th{color:#a3b1c2}
+  table.table td{font-size:13px;line-height:1.55}
+  table.table td::before{font-size:10.5px;letter-spacing:.06em}
+  .mono{font-size:12px}
+  .row-title{font-size:13px}
+  .row-sub{font-size:11.5px}
+  .alert-title{font-size:13px}
+  .alert-meta{font-size:11.5px}
+  .device-name{font-size:13px}
+  .device-meta{font-size:11px}
+  .bar-row .pct{font-size:11px}
+  .bar-label{font-size:10.5px}
+  .term-bar span{font-size:10.5px}
+  .node-name{font-size:13px}
+  .node-meta{font-size:11px;line-height:1.6}
+  .node-badge{font-size:10.5px;padding:3px 7px}
+  .asset-ip{font-size:11px}
+  .path-chip{font-size:10.5px}
+  .path-arrow{font-size:11px}
+  .vault-name{font-size:13px}
+  .vault-meta{font-size:11px}
+  .ring-sub{font-size:9.5px}
+  .finding-title{font-size:13px}
+  .finding-meta{font-size:11.5px}
+  .finding-code{font-size:11px;line-height:1.6}
+  .fs-k{font-size:11px}
+  .fs-v{font-size:12px;line-height:1.6}
+  .fs-foot{font-size:11px}
+  .tl-time{font-size:11px}
+  .tl-title{font-size:13px}
+  .tl-sub{font-size:11.5px}
+  .model-pill{font-size:11px}
+  .ctx{font-size:10.5px}
+  .msg-avatar{font-size:10.5px}
+  .msg-bubble{font-size:13px;line-height:1.7}
+  .tool-head{font-size:10.5px}
+  .tool-body{font-size:11.5px}
+  .approval-body{font-size:11.5px}
+  .diff{font-size:11px;line-height:1.7}
+  .provider-meta{font-size:11px}
+  .ctx-big small{font-size:11px}
+  .prompt-desc{font-size:11px}
+  .usage-row{font-size:11px}
+  .field label{font-size:12px}
+  .mobile-item{font-size:10.5px}
+
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+  }
+</style>
+</head>
+<body>
+<div class="bg-grid"></div>
+<div class="bg-glow"></div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 4 14L16 12h5"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2-5 4 10 2.5-5H21"/><circle cx="12" cy="12" r="9.2" opacity=".35"/></symbol>
+  <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M8.5 11l2 2 4.5-4.5"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.8"/><rect x="3" y="14" width="18" height="6" rx="1.8"/><path d="M7 7h.01M7 17h.01M11 7h5M11 17h5"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 4l3 3M14 6l3 3"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 8h13l-3-3M20 16H7l3 3"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6L12 3z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.2-2.8 7.6-7 9-4.2-1.4-7-4.8-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1.2l2-1.5-2-3.4-2.3 1a7 7 0 00-2-1.2L14.3 3h-4l-.3 2.7a7 7 0 00-2 1.2l-2.3-1-2 3.4 2 1.5A7 7 0 005.6 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-1a7 7 0 002 1.2l.3 2.7h4l.3-2.7a7 7 0 002-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5L21 21"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 019.5 4a8.5 8.5 0 1010.5 10.5z"/></symbol>
+  <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 010 18z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 9a6 6 0 10-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10 20a2 2 0 004 0"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx=".8"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></symbol>
+  <symbol id="i-mem" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 17v3M12 17v3M17 17v3M7 10v4M12 10v4M17 10v4"/></symbol>
+  <symbol id="i-disk" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 15h18"/><circle cx="17" cy="17" r="1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-net" viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0114 0M8 15.5a6 6 0 018 0M11 18.5a2 2 0 012 0"/><path d="M12 9V4M9.5 6.5L12 4l2.5 2.5"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3l9.5 17h-19L12 3z"/><path d="M12 9v5M12 17.5h.01"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l2.5 2.5L16 9"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 5H6a2 2 0 00-2 2v10a2 2 0 002 2h4M15 8l4 4-4 4M19 12H9"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0116 0"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5M3 17l9 5 9-5"/></symbol>
+  <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+</svg>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-text"><strong>AIBOT</strong><small>OPS CONSOLE</small></div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-label">监控</div>
+      <a class="nav-item active" data-page="overview"><svg class="icon"><use href="#i-grid"/></svg>运行态势</a>
+      <a class="nav-item" data-page="performance"><svg class="icon"><use href="#i-activity"/></svg>性能监控</a>
+      <a class="nav-item" data-page="monitor"><svg class="icon"><use href="#i-pulse"/></svg>服务轮询<span class="nav-badge">3</span></a>
+      <a class="nav-item" data-page="inspections"><svg class="icon"><use href="#i-clipboard"/></svg>定期巡检</a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-label">管理</div>
+      <a class="nav-item" data-page="assets"><svg class="icon"><use href="#i-server"/></svg>资产与跳板</a>
+      <a class="nav-item" data-page="vault"><svg class="icon"><use href="#i-key"/></svg>凭据中心</a>
+      <a class="nav-item" data-page="forwards"><svg class="icon"><use href="#i-swap"/></svg>转发与节点</a>
+      <a class="nav-item" data-page="ai"><svg class="icon"><use href="#i-spark"/></svg>AI 运维</a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-label">系统</div>
+      <a class="nav-item" data-page="audit"><svg class="icon"><use href="#i-shield"/></svg>审计日志</a>
+      <a class="nav-item" data-page="settings"><svg class="icon"><use href="#i-settings"/></svg>系统设置</a>
+    </div>
+
+    <div class="sidebar-foot">
+      <div class="user">
+        <div class="avatar">A</div>
+        <div><strong>admin</strong><small>超级管理员</small></div>
+        <button class="icon-btn" title="退出"><svg class="icon sm"><use href="#i-logout"/></svg></button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn mobile-menu" onclick="openSheet()"><svg class="icon"><use href="#i-menu"/></svg></button>
+      <div class="crumb"><span class="sep">/</span><b id="crumb">运行态势</b></div>
+      <div class="top-actions">
+        <div class="sys-badge"><span class="led ok pulse"></span>SYSTEM ONLINE</div>
+        <div class="clock" id="clock">--:--:--</div>
+        <label class="search"><svg class="icon sm"><use href="#i-search"/></svg><input placeholder="搜索设备、资产、凭据…" id="globalSearch"><kbd>⌘K</kbd></label>
+        <button class="icon-btn" title="告警"><svg class="icon"><use href="#i-bell"/></svg><span class="dot"></span></button>
+        <button class="icon-btn" id="themeToggle" title="切换主题"><svg class="icon"><use href="#i-moon"/></svg></button>
+        <div class="avatar-btn">A</div>
+      </div>
+    </header>
+
+    <main class="pages">
+      <!-- ================= OVERVIEW ================= -->
+      <section class="page active" data-page="overview">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">OVERVIEW / LIVE</div>
+            <h1>运行态势</h1>
+            <p class="sub">全部节点、隧道与检查项的实时状态 · 最后更新 <span class="mono" id="lastUpdate">刚刚</span></p>
+          </div>
+          <div class="page-actions">
+            <button class="btn ghost"><svg class="icon sm"><use href="#i-clock"/></svg>最近 24 小时</button>
+            <button class="btn primary"><svg class="icon sm"><use href="#i-plus"/></svg>新建转发</button>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom:16px">
+          <div class="panel col-3 stat">
+            <div class="stat-top"><svg class="icon sm"><use href="#i-server"/></svg>在线设备</div>
+            <div class="stat-value">12<small>/ 14</small></div>
+            <div class="stat-foot"><span class="delta up">▲ 2</span><span class="spark" id="spark-online"></span></div>
+          </div>
+          <div class="panel col-3 stat">
+            <div class="stat-top"><svg class="icon sm"><use href="#i-swap"/></svg>活跃转发</div>
+            <div class="stat-value">28</div>
+            <div class="stat-foot"><span class="delta up">▲ 3</span><span class="spark" id="spark-forwards"></span></div>
+          </div>
+          <div class="panel col-3 stat">
+            <div class="stat-top"><svg class="icon sm"><use href="#i-pulse"/></svg>异常检查</div>
+            <div class="stat-value">3<small>items</small></div>
+            <div class="stat-foot"><span class="delta down">▼ 1</span><span class="spark" id="spark-checks"></span></div>
+          </div>
+          <div class="panel col-3 stat">
+            <div class="stat-top"><svg class="icon sm"><use href="#i-bell"/></svg>待处理告警</div>
+            <div class="stat-value" style="color:var(--crit)">2</div>
+            <div class="stat-foot"><span class="delta down">critical</span><span class="spark" id="spark-alerts"></span></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom:16px">
+          <div class="panel col-8">
+            <div class="panel-head">
+              <div><div class="panel-title">集群负载</div><div class="panel-sub">CPU / MEMORY / NETWORK · 24H</div></div>
+              <div class="right chart-legend">
+                <span><i class="legend-dot" style="background:var(--accent);color:var(--accent)"></i>CPU</span>
+                <span><i class="legend-dot" style="background:var(--accent-2);color:var(--accent-2)"></i>MEM</span>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="chart-wrap" id="chart-cluster"></div>
+              <div class="chart-axis"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>NOW</span></div>
+              <div style="display:flex;gap:26px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line-2)">
+                <div><div class="panel-sub">CPU AVG</div><div class="mono" style="font-size:17px;margin-top:5px">42.6%</div></div>
+                <div><div class="panel-sub">MEM AVG</div><div class="mono" style="font-size:17px;margin-top:5px">63.8%</div></div>
+                <div><div class="panel-sub">NET PEAK</div><div class="mono" style="font-size:17px;margin-top:5px">184 Mbps</div></div>
+                <div style="margin-left:auto;align-self:flex-end"><span class="pill ok"><span class="led ok pulse"></span>HEALTHY</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel col-4">
+            <div class="panel-head">
+              <div><div class="panel-title">实时告警</div><div class="panel-sub">UNRESOLVED · 2</div></div>
+              <div class="right"><span class="pill crit"><span class="led crit"></span>LIVE</span></div>
+            </div>
+            <div class="panel-body" id="alert-list"></div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="panel col-8">
+            <div class="panel-head">
+              <div><div class="panel-title">设备健康</div><div class="panel-sub">5 NODES · AGENT 15S HEARTBEAT</div></div>
+              <div class="right"><button class="btn sm ghost">查看全部<svg class="icon sm"><use href="#i-chevron"/></svg></button></div>
+            </div>
+            <div class="panel-body" id="device-list"></div>
+          </div>
+
+          <div class="panel col-4">
+            <div class="panel-head">
+              <div><div class="panel-title">快速连接</div><div class="panel-sub">SSH PROXYJUMP</div></div>
+              <div class="right"><button class="icon-btn" onclick="copyCode()" title="复制"><svg class="icon sm"><use href="#i-copy"/></svg></button></div>
+            </div>
+            <div class="panel-body">
+              <div class="terminal">
+                <div class="term-bar"><i></i><i></i><i></i><span>jump-hk · ~</span></div>
+                <div class="term-body" id="term-code">
+                  <div><span class="d">$</span> ssh -J <span class="c">ops@node-hk:18022</span> <span class="g">root@192.168.1.10</span></div>
+                  <div><span class="d">→</span> verifying host key fingerprint…</div>
+                  <div><span class="d">→</span> session recorded · <span class="g">audit #S-2048</span></div>
+                  <div><span class="d">$</span> <span class="cursor"></span></div>
+                </div>
+              </div>
+              <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+                <span class="tag">SSH</span><span class="tag">RDP via -L</span><span class="tag">recorded</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= PERFORMANCE ================= -->
+      <section class="page" data-page="performance">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">TELEMETRY / 15S</div>
+            <h1>性能监控</h1>
+            <p class="sub">Agent 本地采样 · 环形缓冲补传 · 1min / 5min 降采样</p>
+          </div>
+          <div class="page-actions">
+            <select class="input" style="width:170px;height:36px" id="perfDevice">
+              <option>prod-web-01 · 10.0.3.11</option>
+              <option>db-master · 10.0.3.21</option>
+              <option>jump-hk · 172.16.8.5</option>
+            </select>
+            <div class="chips">
+              <span class="chip">1h</span><span class="chip active">6h</span><span class="chip">24h</span><span class="chip">7d</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom:16px">
+          <div class="panel col-3 stat">
+            <div class="stat-top"><svg class="icon sm"><use href="#i-cpu"/></svg>CPU 使用率</div>
+            <div class="stat-value">42.6<small>%</small></div>
+            <div class="stat-foot"><span class="pill ok">NORMAL</span><span class="spark" id="spark-perf-cpu"></span></div>
+          </div>
+          <div class="panel col-3 stat">
+            <div class="stat-top"><svg class="icon sm"><use href="#i-mem"/></svg>内存占用</div>
+            <div class="stat-value">68.2<small>%</small></div>
+            <div class="stat-foot"><span class="pill warn">NEAR THRESHOLD</span><span class="spark" id="spark-perf-mem"></span></div>
+          </div>
+          <div class="panel col-3 stat">
+            <div class="stat-top"><svg class="icon sm"><use href="#i-disk"/></svg>磁盘使用</div>
+            <div class="stat-value">71<small>%</small></div>
+            <div class="stat-foot"><span class="pill ok">/ 71% · /data 54%</span></div>
+          </div>
+          <div class="panel col-3 stat">
+            <div class="stat-top"><svg class="icon sm"><use href="#i-net"/></svg>网络吞吐</div>
+            <div class="stat-value">128<small>Mbps</small></div>
+            <div class="stat-foot"><span class="pill info">RX 96 / TX 32</span><span class="spark" id="spark-perf-net"></span></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom:16px">
+          <div class="panel col-7">
+            <div class="panel-head">
+              <div><div class="panel-title">CPU 使用率</div><div class="panel-sub">TOTAL · USER · IOWAIT</div></div>
+              <div class="right chart-legend"><span><i class="legend-dot" style="background:var(--accent);color:var(--accent)"></i>total</span><span><i class="legend-dot" style="background:var(--accent-2);color:var(--accent-2)"></i>iowait</span></div>
+            </div>
+            <div class="panel-body"><div class="chart-wrap" id="chart-cpu"></div><div class="chart-axis"><span>12:00</span><span>14:00</span><span>16:00</span><span>18:00</span><span>NOW</span></div></div>
+          </div>
+          <div class="panel col-5">
+            <div class="panel-head">
+              <div><div class="panel-title">内存</div><div class="panel-sub">USED / AVAILABLE / SWAP</div></div>
+              <div class="right"><span class="pill warn">68.2%</span></div>
+            </div>
+            <div class="panel-body"><div class="chart-wrap" id="chart-mem"></div><div class="chart-axis"><span>12:00</span><span>15:00</span><span>18:00</span><span>NOW</span></div></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom:16px">
+          <div class="panel col-7">
+            <div class="panel-head">
+              <div><div class="panel-title">网络吞吐</div><div class="panel-sub">ETH0 · RX / TX</div></div>
+              <div class="right chart-legend"><span><i class="legend-dot" style="background:var(--accent);color:var(--accent)"></i>RX</span><span><i class="legend-dot" style="background:var(--accent-3);color:var(--accent-3)"></i>TX</span></div>
+            </div>
+            <div class="panel-body"><div class="chart-wrap" id="chart-net"></div><div class="chart-axis"><span>12:00</span><span>14:00</span><span>16:00</span><span>18:00</span><span>NOW</span></div></div>
+          </div>
+          <div class="panel col-5">
+            <div class="panel-head"><div><div class="panel-title">挂载点</div><div class="panel-sub">DISK USAGE / INODE</div></div></div>
+            <div class="panel-body" id="mount-list"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div><div class="panel-title">Top 进程</div><div class="panel-sub">CPU / MEM · TOP 5</div></div>
+            <div class="right"><span class="pill muted">不采集命令行</span></div>
+          </div>
+          <div class="panel-body flush table-wrap">
+            <table class="table">
+              <thead><tr><th>PID</th><th>进程</th><th>CPU</th><th>MEM</th><th>RSS</th><th>状态</th></tr></thead>
+              <tbody id="proc-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= MONITOR ================= -->
+      <section class="page" data-page="monitor">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">POLLING / 30–60S</div>
+            <h1>服务轮询</h1>
+            <p class="sub">8 个检查项 · 3 个异常 · 2 个告警已确认</p>
+          </div>
+          <div class="page-actions">
+            <div class="chips">
+              <span class="chip active">全部</span><span class="chip">异常</span><span class="chip">暂停</span><span class="chip">Agent 侧</span>
+            </div>
+            <button class="btn primary"><svg class="icon sm"><use href="#i-plus"/></svg>新建检查</button>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="panel col-8">
+            <div class="panel-head">
+              <div><div class="panel-title">检查项</div><div class="panel-sub">LIVE · 60S INTERVAL</div></div>
+              <div class="right"><span class="pill ok"><span class="led ok pulse"></span>RUNNING</span></div>
+            </div>
+            <div class="panel-body" id="check-list"></div>
+          </div>
+
+          <div class="stack col-4">
+            <div class="panel">
+              <div class="panel-head"><div><div class="panel-title">状态分布</div><div class="panel-sub">LAST 24H</div></div></div>
+              <div class="panel-body">
+                <div style="display:flex;align-items:center;gap:18px">
+                  <div id="ring-health"></div>
+                  <div style="flex:1">
+                    <div class="bar-row" style="margin-bottom:11px"><span class="mono" style="width:44px;color:var(--ok)">UP</span><div class="bar"><i style="width:75%"></i></div><span class="pct">6</span></div>
+                    <div class="bar-row" style="margin-bottom:11px"><span class="mono" style="width:44px;color:var(--warn)">WARN</span><div class="bar warn"><i style="width:25%"></i></div><span class="pct">2</span></div>
+                    <div class="bar-row"><span class="mono" style="width:44px;color:var(--crit)">DOWN</span><div class="bar crit"><i style="width:12%"></i></div><span class="pct">1</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><div><div class="panel-title">告警</div><div class="panel-sub">UNRESOLVED</div></div><div class="right"><span class="pill crit">2</span></div></div>
+              <div class="panel-body" id="monitor-alerts"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= INSPECTIONS ================= -->
+      <section class="page" data-page="inspections">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">INSPECTION / DAILY 03:30</div>
+            <h1>定期巡检</h1>
+            <p class="sub">linux-basic profile · 12 项检查 · 证据留存 180 天</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn ghost"><svg class="icon sm"><use href="#i-clock"/></svg>每日 03:30</button>
+            <button class="btn primary"><svg class="icon sm"><use href="#i-pulse"/></svg>立即巡检</button>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom:16px">
+          <div class="panel col-5">
+            <div class="panel-head"><div><div class="panel-title">最近一次巡检</div><div class="panel-sub">RUN #R-1042 · 2 小时前</div></div><div class="right"><span class="pill warn">WARNING</span></div></div>
+            <div class="panel-body">
+              <div class="score-wrap">
+                <div id="ring-inspection"></div>
+                <div style="flex:1;min-width:150px">
+                  <div class="mono" style="font-size:10px;color:var(--muted);letter-spacing:.12em">SCORE</div>
+                  <div style="font-size:34px;font-family:var(--mono);margin:4px 0 8px">92<span style="font-size:13px;color:var(--muted)">/100</span></div>
+                  <div class="lead">2 个警告、1 个提示。根分区接近阈值，建议本周处理。</div>
+                </div>
+              </div>
+              <div style="display:flex;gap:10px;margin-top:18px;padding-top:14px;border-top:1px solid var(--line-2)">
+                <span class="pill ok">6 正常</span><span class="pill warn">2 警告</span><span class="pill crit">1 严重</span><span class="pill muted">180 天留存</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel col-7">
+            <div class="panel-head"><div><div class="panel-title">发现项</div><div class="panel-sub">FINDINGS · 3</div></div><div class="right"><button class="btn sm ghost">导出 Markdown</button></div></div>
+            <div class="panel-body"><div class="findings" id="finding-list"></div></div>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="panel col-7">
+            <div class="panel-head"><div><div class="panel-title">巡检历史</div><div class="panel-sub">LAST 7 RUNS</div></div></div>
+            <div class="panel-body flush table-wrap">
+              <table class="table">
+                <thead><tr><th>运行</th><th>触发</th><th>耗时</th><th>评分</th><th>结果</th></tr></thead>
+                <tbody id="run-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel col-5">
+            <div class="panel-head"><div><div class="panel-title">巡检计划</div><div class="panel-sub">SCHEDULE</div></div></div>
+            <div class="panel-body">
+              <div class="field"><label>频率</label><div class="input" style="display:flex;align-items:center">每日 03:30</div></div>
+              <div class="field"><label>目标范围</label><div class="input" style="display:flex;align-items:center">全部 Linux 设备 · 12 台</div></div>
+              <div class="field"><label>Profile</label><div class="input" style="display:flex;align-items:center">linux-basic · 只读账号</div></div>
+              <div class="field" style="margin-bottom:0"><label>保留期</label><div class="input" style="display:flex;align-items:center">180 天 · 证据脱敏</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:16px">
+          <div class="panel col-6">
+            <div class="panel-head">
+              <div><div class="panel-title">飞书推送</div><div class="panel-sub">FEISHU · 运维告警群</div></div>
+              <div class="right"><span class="pill ok">已送达</span></div>
+            </div>
+            <div class="panel-body">
+              <div class="fs-card">
+                <div class="fs-head"><span class="bar"></span><div class="fs-title">巡检完成 · 得分 92</div><span class="pill warn" style="margin-left:auto">WARNING</span></div>
+                <div class="fs-body">
+                  <div class="fs-row">
+                    <div class="fs-field"><div class="fs-k">计划</div><div class="fs-v">linux-basic · 每日 03:30</div></div>
+                    <div class="fs-field"><div class="fs-k">范围 / 耗时</div><div class="fs-v">12 台设备 · 48s</div></div>
+                    <div class="fs-field"><div class="fs-k">发现项</div><div class="fs-v">1 严重 · 2 警告</div></div>
+                  </div>
+                  <div style="border-top:1px solid var(--line-2);padding-top:10px">
+                    <div class="fs-k">TOP FINDING</div>
+                    <div class="fs-v" style="margin-top:4px"><b>根分区使用率 87%</b><br>db-master · /dev/vda1 · 阈值 85%</div>
+                  </div>
+                </div>
+                <div class="fs-actions">
+                  <button class="fs-btn primary">查看报告</button>
+                  <button class="fs-btn">静默 1 天</button>
+                  <button class="fs-btn">确认</button>
+                </div>
+                <div class="fs-foot">RUN R-1042 · 2026-11-12 03:31 CST · 控制面</div>
+              </div>
+              <div style="display:flex;gap:10px;margin-top:14px;align-items:center;flex-wrap:wrap">
+                <span class="pill muted">群 Webhook</span>
+                <span class="pill muted">签名 HMAC-SHA256</span>
+                <span class="pill muted">去重 1 条 / run</span>
+                <button class="btn sm ghost" style="margin-left:auto"><svg class="icon sm"><use href="#i-pulse"/></svg>测试发送</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel col-6">
+            <div class="panel-head"><div><div class="panel-title">投递记录</div><div class="panel-sub">NOTIFY DELIVERIES</div></div><div class="right"><button class="btn sm ghost">全部重试</button></div></div>
+            <div class="panel-body flush table-wrap">
+              <table class="table">
+                <thead><tr><th>事件</th><th>渠道</th><th>状态</th><th>时间</th></tr></thead>
+                <tbody>
+                  <tr><td><span class="mono" style="font-size:10px">inspection.completed</span></td><td>运维告警群</td><td><span class="pill ok">SENT</span></td><td class="mono" style="font-size:10px">03:31</td></tr>
+                  <tr><td><span class="mono" style="font-size:10px">check.down</span></td><td>运维告警群</td><td><span class="pill ok">SENT</span></td><td class="mono" style="font-size:10px">02:14</td></tr>
+                  <tr><td><span class="mono" style="font-size:10px">ai.approval_required</span></td><td>值班私聊</td><td><span class="pill warn">RETRY 2</span></td><td class="mono" style="font-size:10px">01:52</td></tr>
+                  <tr><td><span class="mono" style="font-size:10px">inspection.completed</span></td><td>运维告警群</td><td><span class="pill muted">SKIPPED 静默</span></td><td class="mono" style="font-size:10px">昨天 23:40</td></tr>
+                </tbody>
+              </table>
+              <div style="padding:12px 16px;border-top:1px solid var(--line-2);display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <span class="mono" style="font-size:9.5px;color:var(--muted)">路由</span>
+                <span class="pill crit">critical → 立即</span>
+                <span class="pill warn">warning → 22:00–08:00 抑制</span>
+                <span class="pill ok">recovery → 合并</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= ASSETS ================= -->
+      <section class="page" data-page="assets">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">ASSETS / JUMP PATH</div>
+            <h1>资产与跳板</h1>
+            <p class="sub">4 个内网资产 · 2 个跳板在线 · 1 个 stale</p>
+          </div>
+          <div class="page-actions">
+            <label class="search" style="width:230px"><svg class="icon sm"><use href="#i-search"/></svg><input placeholder="搜索名称、IP、标签…"></label>
+            <button class="btn primary"><svg class="icon sm"><use href="#i-plus"/></svg>新增资产</button>
+          </div>
+        </div>
+
+        <div class="chips" style="margin-bottom:16px">
+          <span class="chip active">全部</span><span class="chip">SSH</span><span class="chip">RDP</span><span class="chip">数据库</span><span class="chip">内网</span><span class="chip">存储</span>
+        </div>
+
+        <div class="grid" id="asset-grid"></div>
+      </section>
+
+      <!-- ================= VAULT ================= -->
+      <section class="page" data-page="vault">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">VAULT / XCHACHA20-POLY1305</div>
+            <h1>凭据中心</h1>
+            <p class="sub">主密钥外置 · 列表不回显 · reveal 需二次认证并审计</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn ghost"><svg class="icon sm"><use href="#i-shield"/></svg>主密钥轮换</button>
+            <button class="btn primary"><svg class="icon sm"><use href="#i-plus"/></svg>新增凭据</button>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-bottom:16px">
+          <div class="panel-body" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+            <div class="alert-icon info" style="width:34px;height:34px"><svg class="icon"><use href="#i-shield"/></svg></div>
+            <div style="flex:1;min-width:220px"><div class="row-title">凭据只存在控制面</div><div class="row-sub">Agent 只转发 TCP，不接收用户名、密码或私钥。reveal 操作 5 次/分钟限流。</div></div>
+            <span class="pill ok"><span class="led ok"></span>ENCRYPTED</span>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="panel col-8">
+            <div class="panel-head"><div><div class="panel-title">凭据列表</div><div class="panel-sub">4 ITEMS · LAST USED</div></div><div class="right"><span class="pill muted">AES-256-GCM</span></div></div>
+            <div class="panel-body" id="vault-list"></div>
+          </div>
+          <div class="stack col-4">
+            <div class="panel">
+              <div class="panel-head"><div><div class="panel-title">使用审计</div><div class="panel-sub">LAST 24H</div></div></div>
+              <div class="panel-body"><div class="timeline" id="vault-audit"></div></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><div><div class="panel-title">安全基线</div><div class="panel-sub">POSTURE</div></div></div>
+              <div class="panel-body">
+                <div class="bar-row" style="margin-bottom:12px"><span class="mono" style="width:64px">主密钥</span><div class="bar"><i style="width:100%"></i></div><span class="pct">OK</span></div>
+                <div class="bar-row" style="margin-bottom:12px"><span class="mono" style="width:64px">TOTP</span><div class="bar"><i style="width:100%"></i></div><span class="pct">ON</span></div>
+                <div class="bar-row"><span class="mono" style="width:64px">备份分离</span><div class="bar"><i style="width:100%"></i></div><span class="pct">OK</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= FORWARDS ================= -->
+      <section class="page" data-page="forwards">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">FORWARDS / NODES</div>
+            <h1>转发与节点</h1>
+            <p class="sub">端口转发 · 域名解析 · 私有隧道 · P2P · 准入与流量 · 状态机 saved → applied → observed</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn ghost"><svg class="icon sm"><use href="#i-server"/></svg>节点管理</button>
+            <button class="btn primary"><svg class="icon sm"><use href="#i-plus"/></svg>新建条目</button>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom:16px">
+          <div class="panel col-3 stat"><div class="stat-top"><svg class="icon sm"><use href="#i-net"/></svg>今日下行</div><div class="stat-value">1.82<span style="font-size:13px;color:var(--muted)"> TB</span></div><div class="stat-foot"><span class="delta up">▲ 8.4%</span></div></div>
+          <div class="panel col-3 stat"><div class="stat-top"><svg class="icon sm"><use href="#i-net"/></svg>今日上行</div><div class="stat-value">486<span style="font-size:13px;color:var(--muted)"> GB</span></div><div class="stat-foot"><span class="delta down">▼ 2.1%</span></div></div>
+          <div class="panel col-3 stat"><div class="stat-top"><svg class="icon sm"><use href="#i-server"/></svg>节点在线</div><div class="stat-value" style="color:var(--ok)">3<span style="font-size:13px;color:var(--muted)"> / 3</span></div><div class="stat-foot"><span class="pill ok">HEALTHY</span></div></div>
+          <div class="panel col-3 stat"><div class="stat-top"><svg class="icon sm"><use href="#i-swap"/></svg>条目</div><div class="stat-value">46</div><div class="stat-foot"><span class="pill warn">2 异常</span></div></div>
+        </div>
+
+        <div class="panel" style="margin-bottom:16px">
+          <div class="panel-head"><div><div class="panel-title">节点</div><div class="panel-sub">NODES · 3 ONLINE</div></div><div class="right"><button class="btn sm ghost">端口池清理</button></div></div>
+          <div class="panel-body">
+            <div class="node-strip">
+              <div class="node-card">
+                <div class="node-head"><span class="led ok"></span><span class="node-name">HK-01 · 香港入口</span><span class="pill ok" style="margin-left:auto">ONLINE</span></div>
+                <div class="node-meta">45.76.xx.xx:7000 · TCP / WS · 最大复用 8</div>
+                <div class="node-badges"><span class="node-badge">域名</span><span class="node-badge">转发</span><span class="node-badge">隧道</span><span class="node-badge">P2P</span><span class="node-badge">端口 10001-11000</span></div>
+                <div class="bar"><i style="width:62%"></i></div>
+                <div class="node-meta">本月流量 62% · 6.2 / 10 TB · 重置日 1 号</div>
+              </div>
+              <div class="node-card">
+                <div class="node-head"><span class="led ok"></span><span class="node-name">SG-02 · 新加坡</span><span class="pill warn" style="margin-left:auto">QUOTA 88%</span></div>
+                <div class="node-meta">128.199.xx.xx:7000 · QUIC · 最大复用 5</div>
+                <div class="node-badges"><span class="node-badge">域名</span><span class="node-badge">转发</span><span class="node-badge">隧道</span><span class="node-badge">P2P 中继关闭</span></div>
+                <div class="bar"><i style="width:88%;background:linear-gradient(90deg,var(--warn),var(--crit))"></i></div>
+                <div class="node-meta">本月流量 88% · 8.8 / 10 TB · 预警 9 TB</div>
+              </div>
+              <div class="node-card">
+                <div class="node-head"><span class="led warn"></span><span class="node-name">FRA-03 · 法兰克福</span><span class="pill muted" style="margin-left:auto">MAINT</span></div>
+                <div class="node-meta">fra.ops.example.com:443 · WSS · 最大复用 5</div>
+                <div class="node-badges"><span class="node-badge">域名</span><span class="node-badge">转发</span><span class="node-badge">隧道</span><span class="node-badge">P2P</span></div>
+                <div class="bar"><i style="width:24%"></i></div>
+                <div class="node-meta">本月流量 24% · 2.4 / 10 TB · 维护窗口 02:00</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div><div class="panel-title">转发条目</div><div class="panel-sub">5 SHOWN · 46 TOTAL</div></div><div class="right"><div class="chips"><span class="chip active">全部</span><span class="chip">端口</span><span class="chip">域名</span><span class="chip">隧道</span><span class="chip">P2P</span><span class="chip">代理</span></div></div></div>
+          <div class="panel-body flush table-wrap">
+            <table class="table">
+              <thead><tr><th>名称</th><th>类型</th><th>客户端</th><th>节点</th><th>公开入口</th><th>目标</th><th>7 天流量</th><th>状态</th><th></th></tr></thead>
+              <tbody id="forward-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:16px">
+          <div class="panel col-7">
+            <div class="panel-head"><div><div class="panel-title">流量排行</div><div class="panel-sub">TOP ENTRIES · LAST 7D</div></div><div class="right"><div class="chips"><span class="chip active">7 天</span><span class="chip">30 天</span><span class="chip">IN</span><span class="chip">OUT</span></div></div></div>
+            <div class="panel-body">
+              <div style="display:flex;flex-direction:column;gap:13px">
+                <div><div style="display:flex;justify-content:space-between;gap:10px"><span style="font-size:12px">CI 私有隧道 <span class="mono" style="color:var(--muted);font-size:9.5px">ci-runner → node-sg</span></span><span class="mono" style="font-size:10.5px;color:var(--accent)">386 G</span></div><div class="bar"><i style="width:100%"></i></div></div>
+                <div><div style="display:flex;justify-content:space-between;gap:10px"><span style="font-size:12px">NAS 管理面板 <span class="mono" style="color:var(--muted);font-size:9.5px">nas-home → node-hk</span></span><span class="mono" style="font-size:10.5px">128 G</span></div><div class="bar"><i style="width:33%"></i></div></div>
+                <div><div style="display:flex;justify-content:space-between;gap:10px"><span style="font-size:12px">办公室 RDP <span class="mono" style="color:var(--muted);font-size:9.5px">win-office → node-hk</span></span><span class="mono" style="font-size:10.5px">42 G</span></div><div class="bar"><i style="width:11%"></i></div></div>
+                <div><div style="display:flex;justify-content:space-between;gap:10px"><span style="font-size:12px">分支 P2P <span class="mono" style="color:var(--muted);font-size:9.5px">dev-laptop → node-fra</span></span><span class="mono" style="font-size:10.5px">18 G</span></div><div class="bar"><i style="width:5%"></i></div></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel col-5">
+            <div class="panel-head"><div><div class="panel-title">节点策略</div><div class="panel-sub">NODE-SG · QUIC</div></div><div class="right"><button class="btn sm ghost">编辑</button></div></div>
+            <div class="panel-body">
+              <div class="field"><label>端口段 / 端口池</label><div class="input" style="display:flex;align-items:center">10001-11000, 20000 · 已用 212</div></div>
+              <div class="field"><label>域名策略</label><div class="input" style="display:flex;align-items:center">*.sg.ops.example.com · 泛域名禁止</div></div>
+              <div class="field"><label>连接策略</label><div class="input" style="display:flex;align-items:center">复用 5 · P2P 中继关闭 · 加密/压缩开</div></div>
+              <div class="field"><label>限流 / 配额</label><div class="input" style="display:flex;align-items:center">200 Mbps · 并发 50 · 本月 8.8 / 10 TB</div></div>
+              <div class="field" style="margin-bottom:0"><label>准入白名单</label><div class="input" style="display:flex;align-items:center">开启 · 3 个 CIDR</div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= AI ================= -->
+      <section class="page" data-page="ai">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">AI OPS / MULTI-MODEL</div>
+            <h1>AI 运维</h1>
+            <p class="sub">服务器管理、配置变更、巡检分析 · 写操作必须人工审批 · 只读默认</p>
+          </div>
+          <div class="page-actions">
+            <select class="input" style="width:190px;height:36px">
+              <option>DeepSeek V4 · 256K</option>
+              <option>Claude · 200K</option>
+              <option>Gemini · 1M</option>
+              <option>本地 vLLM · 128K</option>
+            </select>
+            <button class="btn primary"><svg class="icon sm"><use href="#i-plus"/></svg>新对话</button>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom:16px">
+          <div class="panel col-8 chat-panel">
+            <div class="chat-head">
+              <span class="model-pill"><span class="led ok pulse"></span>deepseek-v4 · 256K</span>
+              <span class="pill info">TOOLS ON</span>
+              <div class="ctx"><span>CONTEXT</span><div class="ctx-bar"><i style="width:73%"></i></div><span>186K / 256K</span></div>
+            </div>
+            <div class="messages">
+              <div class="msg user">
+                <div class="msg-avatar">A</div>
+                <div class="msg-bubble">检查 db-master 的磁盘和 MySQL 状态。如果根分区超过 85%，给我一个清理方案，<b>不要直接执行</b>。</div>
+              </div>
+              <div class="msg assistant">
+                <div class="msg-avatar">AI</div>
+                <div class="msg-bubble">
+                  已经读取 db-master 的实时指标和只读 SQL 结果。
+                  <div class="tool-card">
+                    <div class="tool-head"><svg class="icon sm"><use href="#i-activity"/></svg>get_metrics · db-master · 128ms</div>
+                    <div class="tool-body"><span class="k">disk /</span> <span class="crit">87.0%</span> · <span class="k">mem</span> <span class="warn">74.2%</span> · <span class="k">load1</span> <span class="v">2.41</span><br><span class="k">mysql</span> <span class="ok">running</span> · <span class="k">connections</span> <span class="v">42 / 200</span></div>
+                  </div>
+                  <div class="tool-card">
+                    <div class="tool-head"><svg class="icon sm"><use href="#i-database"/></svg>run_readonly_sql · 12ms · audited</div>
+                    <div class="tool-body"><span class="v">SELECT table_name, data_length FROM information_schema.tables ORDER BY data_length DESC LIMIT 3;</span><br><span class="k">→</span> <span class="v">app_logs</span> 18.4G · <span class="v">audit_events</span> 6.2G · <span class="v">sessions</span> 1.1G</div>
+                  </div>
+                  <br>根分区 87%，主要占用是 <b>app_logs</b> 和 <b>audit_events</b>。建议先归档 30 天前的日志，再对 <b>app_logs</b> 做分区清理。方案已生成，等待你审批。
+                  <div class="approval">
+                    <div class="approval-head"><svg class="icon sm"><use href="#i-alert"/></svg>待审批 · propose_cleanup · 风险 MEDIUM</div>
+                    <div class="approval-body">目标：db-master · /var/log/app/*.log<br>预计释放：11.8G · 回滚：归档文件保留 7 天</div>
+                    <div class="diff"><span class="del">- /var/log/app/2026-09-*.log  (8.2G)</span>
+<span class="del">- /var/log/app/2026-10-*.log  (3.6G)</span>
+<span class="add">+ 移动到 /data/archive/app/ · 保留 7 天</span></div>
+                    <div class="approval-actions"><button class="btn sm primary">批准并执行</button><button class="btn sm ghost">拒绝</button><button class="btn sm ghost">查看完整 diff</button></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="composer">
+              <textarea placeholder="描述你要管理或排查的内容…"></textarea>
+              <div class="composer-foot">
+                <div class="chips"><span class="chip active">巡检摘要</span><span class="chip">故障定位</span><span class="chip">变更方案</span><span class="chip">日志分析</span></div>
+                <span class="pill muted">READ-ONLY DEFAULT</span>
+                <button class="send-btn"><svg class="icon"><use href="#i-arrow"/></svg></button>
+              </div>
+            </div>
+          </div>
+
+          <div class="stack col-4">
+            <div class="panel">
+              <div class="panel-head"><div><div class="panel-title">上下文</div><div class="panel-sub">LONG CONTEXT · 256K / 1M</div></div><div class="right"><span class="pill info">73%</span></div></div>
+              <div class="panel-body">
+                <div class="ctx-big">186K <small>/ 256K tokens</small></div>
+                <div class="bar" style="margin:10px 0 12px"><i style="width:73%"></i></div>
+                <div class="usage-row"><span>SYSTEM + PROMPT</span><b>6K</b></div>
+                <div class="usage-row"><span>PINNED FACTS</span><b>12K</b></div>
+                <div class="usage-row"><span>SUMMARY</span><b>8K</b></div>
+                <div class="usage-row"><span>TOOL RESULTS</span><b>42K</b></div>
+                <div class="usage-row"><span>RECENT TURNS</span><b>118K</b></div>
+                <div style="display:flex;gap:7px;margin-top:12px"><button class="btn sm ghost" style="flex:1">压缩上下文</button><button class="btn sm ghost" style="flex:1">切到 1M 模型</button></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><div><div class="panel-title">模型路由</div><div class="panel-sub">MULTI-MODEL / FALLBACK</div></div></div>
+              <div class="panel-body">
+                <div class="device-row" style="padding-top:0"><div class="device-ico"><svg class="icon"><use href="#i-spark"/></svg></div><div class="device-main"><div class="device-name">DeepSeek V4</div><div class="device-meta">256K · tools · default</div></div><span class="pill ok">PRIMARY</span></div>
+                <div class="device-row"><div class="device-ico" style="color:var(--accent-2);border-color:rgba(91,140,255,.2);background:rgba(91,140,255,.07)"><svg class="icon"><use href="#i-spark"/></svg></div><div class="device-main"><div class="device-name">Claude</div><div class="device-meta">200K · tools · fallback</div></div><span class="pill muted">FALLBACK</span></div>
+                <div class="device-row" style="padding-bottom:0"><div class="device-ico" style="color:var(--accent-3);border-color:rgba(157,123,255,.2);background:rgba(157,123,255,.07)"><svg class="icon"><use href="#i-layers"/></svg></div><div class="device-main"><div class="device-name">Gemini</div><div class="device-meta">1M · long context</div></div><span class="pill info">1M</span></div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><div><div class="panel-title">提示词模板</div><div class="panel-sub">PROMPTS · 4</div></div><div class="right"><button class="btn sm ghost">管理</button></div></div>
+              <div class="panel-body" id="prompt-list"></div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><div><div class="panel-title">工具权限</div><div class="panel-sub">TOOL POLICY</div></div></div>
+              <div class="panel-body">
+                <div class="usage-row"><span>只读工具</span><b style="color:var(--ok)">ALLOW</b></div>
+                <div class="usage-row"><span>低风险变更</span><b style="color:var(--warn)">APPROVAL</b></div>
+                <div class="usage-row"><span>高风险变更</span><b style="color:var(--crit)">STEP-UP</b></div>
+                <div class="usage-row"><span>任意 shell</span><b style="color:var(--crit)">DENY</b></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-bottom:16px">
+          <div class="panel col-7">
+            <div class="panel-head"><div><div class="panel-title">模型接入</div><div class="panel-sub">PROVIDERS · 4 · 256K / 1M</div></div><div class="right"><button class="btn sm ghost">新增</button></div></div>
+            <div class="panel-body" id="provider-list"></div>
+          </div>
+          <div class="panel col-5">
+            <div class="panel-head"><div><div class="panel-title">数据源</div><div class="panel-sub">READ-ONLY · 3</div></div><div class="right"><button class="btn sm ghost">新增</button></div></div>
+            <div class="panel-body" id="datasource-list"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div><div class="panel-title">最近工具调用</div><div class="panel-sub">AI TOOL CALLS · AUDITED</div></div><div class="right"><span class="pill warn">1 待审批</span></div></div>
+          <div class="panel-body flush table-wrap">
+            <table class="table">
+              <thead><tr><th>时间</th><th>工具</th><th>目标</th><th>风险</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="tool-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= AUDIT ================= -->
+      <section class="page" data-page="audit">
+        <div class="page-head">
+          <div><div class="eyebrow">AUDIT / IMMUTABLE</div><h1>审计日志</h1><p class="sub">登录、reveal、连接、查询、轮换全记录 · detail 不含明文</p></div>
+          <div class="page-actions"><button class="btn ghost">导出 CSV</button></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><div class="panel-title">最近事件</div><div class="panel-sub">LAST 24H</div></div><div class="right"><div class="chips"><span class="chip active">全部</span><span class="chip">凭据</span><span class="chip">连接</span><span class="chip">巡检</span></div></div></div>
+          <div class="panel-body"><div class="timeline" id="audit-list"></div></div>
+        </div>
+      </section>
+
+      <!-- ================= SETTINGS ================= -->
+      <section class="page" data-page="settings">
+        <div class="page-head">
+          <div><div class="eyebrow">SYSTEM / SECURITY</div><h1>系统设置</h1><p class="sub">安全、保留期、主密钥与构建信息</p></div>
+        </div>
+        <div class="grid">
+          <div class="panel col-6">
+            <div class="panel-head"><div><div class="panel-title">安全</div><div class="panel-sub">AUTH / SESSION</div></div></div>
+            <div class="panel-body">
+              <div class="field"><label>管理员口令</label><div class="input" style="display:flex;align-items:center">••••••••••••</div></div>
+              <div class="field"><label>TOTP</label><div class="input" style="display:flex;align-items:center">已启用 · 30s</div></div>
+              <div class="field" style="margin-bottom:0"><label>会话超时</label><div class="input" style="display:flex;align-items:center">12h 空闲 / 7d 绝对</div></div>
+            </div>
+          </div>
+          <div class="panel col-6">
+            <div class="panel-head"><div><div class="panel-title">保留期</div><div class="panel-sub">RETENTION</div></div></div>
+            <div class="panel-body">
+              <div class="field"><label>会话录制</label><div class="input" style="display:flex;align-items:center">30 天</div></div>
+              <div class="field"><label>性能原始数据</label><div class="input" style="display:flex;align-items:center">7 天 · 1min 30 天 · 5min 180 天</div></div>
+              <div class="field" style="margin-bottom:0"><label>巡检报告</label><div class="input" style="display:flex;align-items:center">180 天</div></div>
+            </div>
+          </div>
+          <div class="panel col-12">
+            <div class="panel-head">
+              <div><div class="panel-title">通知</div><div class="panel-sub">NOTIFY / FEISHU</div></div>
+              <div class="right"><button class="btn sm ghost"><svg class="icon sm"><use href="#i-plus"/></svg>添加渠道</button></div>
+            </div>
+            <div class="panel-body">
+              <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:11px 12px;border:1px solid var(--line-2);border-radius:10px;background:rgba(120,170,200,.04)">
+                <span class="pill ok">ENABLED</span>
+                <div style="flex:1;min-width:160px">
+                  <div style="font-size:12.5px;font-weight:550">运维告警群 · 飞书群 Webhook</div>
+                  <div class="mono" style="font-size:9.5px;color:var(--muted);margin-top:3px">https://open.feishu.cn/open-apis/bot/v2/hook/••••••••  |  sign: 已配置</div>
+                </div>
+                <span class="pill muted">巡检 / 告警</span>
+                <button class="btn sm ghost">测试</button>
+                <button class="btn sm ghost">编辑</button>
+              </div>
+              <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:11px 12px;border:1px solid var(--line-2);border-radius:10px">
+                <span class="pill muted">V2</span>
+                <div style="flex:1;min-width:160px">
+                  <div style="font-size:12.5px;font-weight:550">值班机器人 · 飞书应用 Bot</div>
+                  <div class="mono" style="font-size:9.5px;color:var(--muted);margin-top:3px">app_id: cli_••••4f2a  |  chat: 值班私聊  |  SDK v3</div>
+                </div>
+                <span class="pill muted">AI 审批 / 卡片回调</span>
+                <button class="btn sm ghost">测试</button>
+                <button class="btn sm ghost">编辑</button>
+              </div>
+              <div class="fs-row" style="margin-top:14px">
+                <div class="fs-field"><div class="fs-k">静默时段</div><div class="fs-v">22:00–08:00 · critical 除外</div></div>
+                <div class="fs-field"><div class="fs-k">重试</div><div class="fs-v">3 次 · 1s / 5s / 30s</div></div>
+                <div class="fs-field"><div class="fs-k">去重</div><div class="fs-v">event + target + 10m bucket</div></div>
+                <div class="fs-field"><div class="fs-k">最近投递</div><div class="fs-v" style="color:var(--ok)">成功 · 03:31</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel col-6">
+            <div class="panel-head"><div><div class="panel-title">外观</div><div class="panel-sub">THEME · FOLLOW SYSTEM</div></div></div>
+            <div class="panel-body">
+              <div class="chips" id="themeModes">
+                <span class="chip" data-mode="auto">跟随系统</span>
+                <span class="chip" data-mode="light">浅色</span>
+                <span class="chip" data-mode="dark">深色</span>
+              </div>
+              <p class="lead" id="themeHint" style="margin:12px 0 0;font-size:11.5px">跟随浏览器/系统外观自动切换。</p>
+              <div class="panel-sub" style="margin-top:14px">PREVIEW</div>
+              <div style="display:flex;gap:8px;margin-top:8px">
+                <span style="flex:1;height:42px;border-radius:8px;border:1px solid var(--line);background:#f4f7fb"></span>
+                <span style="flex:1;height:42px;border-radius:8px;border:1px solid var(--line);background:#1d2129"></span>
+              </div>
+            </div>
+          </div>
+          <div class="panel col-6">
+            <div class="panel-head"><div><div class="panel-title">构建信息</div><div class="panel-sub">BUILD</div></div></div>
+            <div class="panel-body" style="display:flex;gap:26px;flex-wrap:wrap">
+              <div><div class="panel-sub">VERSION</div><div class="mono" style="margin-top:5px">v0.9.0-prototype</div></div>
+              <div><div class="panel-sub">COMMIT</div><div class="mono" style="margin-top:5px">bca6fdd</div></div>
+              <div><div class="panel-sub">GO</div><div class="mono" style="margin-top:5px">1.24 · linux/amd64</div></div>
+              <div><div class="panel-sub">FRP</div><div class="mono" style="margin-top:5px">v0.61</div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<nav class="mobile-nav">
+  <a class="mobile-item active" data-page="overview"><svg class="icon"><use href="#i-grid"/></svg>概览</a>
+  <a class="mobile-item" data-page="performance"><svg class="icon"><use href="#i-activity"/></svg>性能</a>
+  <a class="mobile-item" data-page="monitor"><svg class="icon"><use href="#i-pulse"/></svg>监控</a>
+  <a class="mobile-item" data-page="assets"><svg class="icon"><use href="#i-server"/></svg>资产</a>
+  <a class="mobile-item" onclick="openSheet()"><svg class="icon"><use href="#i-menu"/></svg>更多</a>
+</nav>
+
+<div class="backdrop" id="backdrop" onclick="closeSheet()"></div>
+<div class="sheet" id="sheet">
+  <div class="sheet-handle"></div>
+  <div class="sheet-grid">
+    <a class="sheet-item" data-page="inspections"><svg class="icon"><use href="#i-clipboard"/></svg>巡检</a>
+    <a class="sheet-item" data-page="vault"><svg class="icon"><use href="#i-key"/></svg>凭据</a>
+    <a class="sheet-item" data-page="forwards"><svg class="icon"><use href="#i-swap"/></svg>转发</a>
+    <a class="sheet-item" data-page="ai"><svg class="icon"><use href="#i-spark"/></svg>AI</a>
+    <a class="sheet-item" data-page="audit"><svg class="icon"><use href="#i-shield"/></svg>审计</a>
+    <a class="sheet-item" data-page="settings"><svg class="icon"><use href="#i-settings"/></svg>设置</a>
+  </div>
+</div>
+
+<div class="backdrop" id="modalBackdrop" onclick="closeModal()"></div>
+<div class="modal" id="revealModal">
+  <h3>查看凭据</h3>
+  <p>该操作会写入审计日志，并按 5 次/分钟限流。请重新输入管理员口令。</p>
+  <div class="field"><label>ADMIN PASSWORD</label><input class="input" type="password" id="revealPassword" placeholder="••••••••"></div>
+  <div class="field"><label>TOTP</label><input class="input" type="text" inputmode="numeric" placeholder="6 位验证码" maxlength="6"></div>
+  <div class="secret-reveal" id="secretReveal">ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...a71e</div>
+  <div class="modal-actions">
+    <button class="btn ghost" onclick="closeModal()">取消</button>
+    <button class="btn primary" onclick="revealSecret()">验证并查看</button>
+  </div>
+</div>
+
+<script>
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+
+/* ---------- theme：auto 跟随浏览器，light/dark 手动覆盖 ---------- */
+const root = document.documentElement;
+const themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+const THEME_MODES = ['auto', 'light', 'dark'];
+const THEME_LABEL = {auto:'跟随系统', light:'浅色', dark:'深色'};
+
+function themeMode(){
+  const m = root.dataset.themeMode;
+  return THEME_MODES.includes(m) ? m : 'auto';
+}
+function resolvedTheme(){
+  const mode = themeMode();
+  if (mode !== 'auto') return mode;
+  return themeMedia && themeMedia.matches ? 'dark' : 'light';
+}
+function syncThemeUI(){
+  const mode = themeMode();
+  const effective = root.dataset.theme;
+  const use = $('#themeToggle use');
+  use.setAttribute('href', mode === 'auto' ? '#i-auto' : mode === 'dark' ? '#i-moon' : '#i-sun');
+  const nextLabel = effective === 'dark' ? '浅色' : '深色';
+  $('#themeToggle').title = mode === 'auto'
+    ? `主题：跟随系统（当前${effective === 'dark' ? '深色' : '浅色'}）· 点击固定为${nextLabel}`
+    : `主题：${THEME_LABEL[mode]} · 点击切换为${nextLabel}`;
+  $$('#themeModes .chip').forEach(c => c.classList.toggle('active', c.dataset.mode === mode));
+  const hint = $('#themeHint');
+  if (hint) hint.textContent = mode === 'auto'
+    ? `跟随浏览器/系统外观，当前为${effective === 'dark' ? '深色' : '浅色'}。`
+    : `已固定为${THEME_LABEL[mode]}，不再跟随系统。`;
+}
+function applyTheme(){
+  root.dataset.theme = resolvedTheme();
+  syncThemeUI();
+}
+function setThemeMode(mode){
+  root.dataset.themeMode = THEME_MODES.includes(mode) ? mode : 'auto';
+  try { localStorage.setItem('aibot-theme-mode', root.dataset.themeMode); } catch(e) {}
+  applyTheme();
+}
+applyTheme();
+if (themeMedia) {
+  const onSchemeChange = () => { if (themeMode() === 'auto') applyTheme(); };
+  if (themeMedia.addEventListener) themeMedia.addEventListener('change', onSchemeChange);
+  else if (themeMedia.addListener) themeMedia.addListener(onSchemeChange);
+}
+$('#themeToggle').addEventListener('click', () => {
+  setThemeMode(root.dataset.theme === 'dark' ? 'light' : 'dark');
+});
+$$('#themeModes .chip').forEach(chip => {
+  chip.addEventListener('click', () => setThemeMode(chip.dataset.mode));
+});
+
+/* ---------- navigation ---------- */
+const titles = {overview:'运行态势',performance:'性能监控',monitor:'服务轮询',inspections:'定期巡检',assets:'资产与跳板',vault:'凭据中心',forwards:'转发与节点',ai:'AI 运维',audit:'审计日志',settings:'系统设置'};
+function go(page){
+  $$('.page').forEach(p => p.classList.toggle('active', p.dataset.page === page));
+  $$('.nav-item,.mobile-item,.sheet-item').forEach(a => a.classList.toggle('active', a.dataset.page === page));
+  $('#crumb').textContent = titles[page] || page;
+  window.scrollTo({top:0, behavior:'smooth'});
+  closeSheet();
+}
+$$('[data-page]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); go(a.dataset.page); }));
+
+/* ---------- clock ---------- */
+function tickClock(){
+  $('#clock').textContent = new Date().toLocaleTimeString('zh-CN', {hour12:false});
+}
+tickClock(); setInterval(tickClock, 1000);
+
+/* ---------- sheet / modal ---------- */
+function openSheet(){ $('#sheet').classList.add('show'); $('#backdrop').classList.add('show'); }
+function closeSheet(){ $('#sheet').classList.remove('show'); $('#backdrop').classList.remove('show'); }
+function openModal(){ $('#revealModal').classList.add('show'); $('#modalBackdrop').classList.add('show'); }
+function closeModal(){ $('#revealModal').classList.remove('show'); $('#modalBackdrop').classList.remove('show'); $('#secretReveal').classList.remove('show'); }
+function revealSecret(){
+  const pwd = $('#revealPassword').value.trim();
+  if(!pwd){ $('#revealPassword').focus(); return; }
+  $('#secretReveal').classList.add('show');
+  setTimeout(closeModal, 6000);
+}
+document.addEventListener('keydown', e => {
+  if((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); $('#globalSearch').focus(); }
+  if(e.key === 'Escape'){ closeModal(); closeSheet(); }
+});
+$('#globalSearch').addEventListener('input', e => {
+  if(e.target.value.length > 1){ /* prototype: no-op */ }
+});
+
+/* ---------- chart primitives ---------- */
+let uid = 0;
+function gen(n, base, amp, seed=1){
+  return Array.from({length:n}, (_,i) => {
+    const a = Math.sin((i + seed*7) / n * Math.PI * 2 * 1.5 + seed) * amp;
+    const b = Math.sin((i + seed*3) * 0.9) * amp * 0.35;
+    const c = Math.sin(i * 2.3 + seed*5) * amp * 0.14;
+    return Math.max(0, base + a + b + c);
+  });
+}
+function smoothPath(pts){
+  if(pts.length < 2) return '';
+  let d = `M ${pts[0][0]},${pts[0][1]}`;
+  for(let i=0;i<pts.length-1;i++){
+    const p0 = pts[i-1] || pts[i], p1 = pts[i], p2 = pts[i+1], p3 = pts[i+2] || p2;
+    const cp1x = p1[0] + (p2[0]-p0[0])/6, cp1y = p1[1] + (p2[1]-p0[1])/6;
+    const cp2x = p2[0] - (p3[0]-p1[0])/6, cp2y = p2[1] - (p3[1]-p1[1])/6;
+    d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+function sparkline(values, color='var(--accent)', w=104, h=28){
+  const min = Math.min(...values), max = Math.max(...values);
+  const lo = min - (max-min)*.2 - .001, hi = max + (max-min)*.2 + .001;
+  const pts = values.map((v,i)=>[i/(values.length-1)*w, h-(v-lo)/(hi-lo)*(h-4)-2]);
+  return `<svg class="chart spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px">
+    <path d="${smoothPath(pts)}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke" style="filter:drop-shadow(0 0 4px ${color})"/>
+  </svg>`;
+}
+function areaChart(values, color, w=620, h=190, opts={}){
+  const id = 'c'+(++uid);
+  const min = Math.min(...values), max = Math.max(...values);
+  const lo = min - (max-min)*.18 - .001, hi = max + (max-min)*.18 + .001;
+  const pts = values.map((v,i)=>[i/(values.length-1)*w, h-(v-lo)/(hi-lo)*(h-14)-7]);
+  const d = smoothPath(pts);
+  const grid = [0.2,0.4,0.6,0.8].map(p=>`<line class="chart-grid" x1="0" y1="${h*p}" x2="${w}" y2="${h*p}" stroke="currentColor"/>`).join('');
+  const area = `<path d="${d} L ${w},${h} L 0,${h} Z" fill="url(#f${id})" opacity=".9"/>`;
+  const line = `<path d="${d}" class="chart-line" stroke="${color}" stroke-width="2" style="filter:drop-shadow(0 0 6px ${color})"/>`;
+  const last = pts[pts.length-1];
+  const dot = `<circle cx="${last[0]}" cy="${last[1]}" r="3.2" fill="${color}" style="filter:drop-shadow(0 0 7px ${color})"/>`;
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${opts.height||190}px">
+    <defs><linearGradient id="f${id}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${color}" stop-opacity=".32"/><stop offset="1" stop-color="${color}" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${grid}${area}${line}${dot}
+  </svg>`;
+}
+function multiChart(series, w=620, h=190, height=190){
+  const id = 'c'+(++uid);
+  const all = series.flatMap(s=>s.values);
+  const min = Math.min(...all), max = Math.max(...all);
+  const lo = min - (max-min)*.18 - .001, hi = max + (max-min)*.18 + .001;
+  const grid = [0.2,0.4,0.6,0.8].map(p=>`<line class="chart-grid" x1="0" y1="${h*p}" x2="${w}" y2="${h*p}" stroke="currentColor"/>`).join('');
+  let defs = '', body = '';
+  series.forEach((s, idx) => {
+    const pts = s.values.map((v,i)=>[i/(s.values.length-1)*w, h-(v-lo)/(hi-lo)*(h-14)-7]);
+    const d = smoothPath(pts);
+    defs += `<linearGradient id="f${id}-${idx}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${s.color}" stop-opacity=".28"/><stop offset="1" stop-color="${s.color}" stop-opacity="0"/></linearGradient>`;
+    body += `<path d="${d} L ${w},${h} L 0,${h} Z" fill="url(#f${id}-${idx})"/>`;
+    body += `<path d="${d}" class="chart-line" stroke="${s.color}" stroke-width="2" style="filter:drop-shadow(0 0 6px ${s.color})"/>`;
+    const last = pts[pts.length-1];
+    body += `<circle cx="${last[0]}" cy="${last[1]}" r="3" fill="${s.color}" style="filter:drop-shadow(0 0 7px ${s.color})"/>`;
+  });
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${height}px"><defs>${defs}</defs>${grid}${body}</svg>`;
+}
+function ring(pct, color, size=126, label='SCORE'){
+  const r = 44, c = 2*Math.PI*r;
+  return `<svg class="ring" width="${size}" height="${size}" viewBox="0 0 100 100">
+    <circle cx="50" cy="50" r="${r}" fill="none" stroke="currentColor" stroke-opacity=".1" stroke-width="7"/>
+    <circle cx="50" cy="50" r="${r}" fill="none" stroke="${color}" stroke-width="7" stroke-linecap="round"
+      stroke-dasharray="${c}" stroke-dashoffset="${c*(1-pct/100)}" transform="rotate(-90 50 50)"
+      style="filter:drop-shadow(0 0 6px ${color})"/>
+    <text x="50" y="52" text-anchor="middle" class="ring-text">${pct}</text>
+    <text x="50" y="64" text-anchor="middle" class="ring-sub">${label}</text>
+  </svg>`;
+}
+
+/* ---------- data ---------- */
+const perfCpu = gen(48, 42, 11, 1);
+const perfMem = gen(48, 62, 6, 2).map((v,i)=> i>34 ? v + (i-34)*0.35 : v);
+const perfRx = gen(48, 90, 34, 3);
+const perfTx = gen(48, 30, 14, 5);
+const overviewCpu = gen(64, 40, 10, 1);
+const overviewMem = gen(64, 58, 7, 2);
+
+const alerts = [
+  {sev:'crit', title:'redis · 6379 连接失败', meta:'cache-01 · 2 分钟前 · 连续 3 次', action:'确认'},
+  {sev:'warn', title:'db-master 根分区使用率 87%', meta:'超过阈值 80% · 12 分钟前', action:'查看'},
+  {sev:'warn', title:'证书 14 天后到期', meta:'api.example.com · 1 小时前', action:'续期'},
+];
+const devices = [
+  {name:'prod-web-01', ip:'10.0.3.11 · Ubuntu 24.04', cpu:38, mem:62, state:'up', latency:12},
+  {name:'db-master', ip:'10.0.3.21 · Debian 12', cpu:57, mem:74, state:'up', latency:9},
+  {name:'jump-hk', ip:'172.16.8.5 · Alpine 3.20', cpu:12, mem:31, state:'up', latency:28},
+  {name:'nas-home', ip:'192.168.1.10 · DSM 7.2', cpu:21, mem:48, state:'up', latency:41},
+  {name:'win-office', ip:'192.168.1.42 · Windows 11', cpu:0, mem:0, state:'stale', latency:0},
+];
+const checks = [
+  {name:'nginx · 80', target:'prod-web-01:80', state:'up', latency:8, note:'HTTP 200'},
+  {name:'mysql · 3306', target:'db-master:3306', state:'up', latency:4, note:'SELECT 1 ok'},
+  {name:'redis · 6379', target:'cache-01:6379', state:'down', latency:0, note:'connection refused'},
+  {name:'disk /', target:'db-master', state:'warn', latency:0, note:'87% used'},
+  {name:'cert api.example.com', target:'node-hk:443', state:'warn', latency:0, note:'14d remaining'},
+  {name:'backup freshness', target:'nas-home', state:'up', latency:0, note:'last 6h ago'},
+  {name:'frp tunnel · nas', target:'node-hk:18080', state:'up', latency:22, note:'observed'},
+  {name:'baota panel', target:'192.168.1.10:8888', state:'up', latency:31, note:'API ok'},
+];
+const assets = [
+  {name:'家里的 NAS', ip:'192.168.1.10:22', proto:'SSH', os:'Synology DSM 7.2', via:'jump-hk', state:'reachable', tags:['存储','内网']},
+  {name:'办公室 Win11', ip:'192.168.1.42:3389', proto:'RDP', os:'Windows 11 Pro', via:'jump-hk', state:'reachable', tags:['办公']},
+  {name:'测试数据库', ip:'10.0.3.21:3306', proto:'MySQL', os:'Debian 12', via:'prod-web-01', state:'reachable', tags:['数据库']},
+  {name:'树莓派', ip:'192.168.1.88:22', proto:'SSH', os:'Raspberry Pi OS', via:'jump-hk', state:'stale', tags:['边缘']},
+];
+const creds = [
+  {name:'prod-web 巡检私钥', kind:'SSH KEY', user:'ops', fp:'SHA256:9f2c…a71e', used:'3 分钟前', tone:'ok'},
+  {name:'宝塔面板 API', kind:'BAOTA API', user:'aibot', fp:'panel.nas.local', used:'1 小时前', tone:'ok'},
+  {name:'MySQL 只读账号', kind:'DB PASSWORD', user:'readonly', fp:'10.0.3.21:3306', used:'昨天', tone:'muted'},
+  {name:'办公室 RDP', kind:'SSH PASSWORD', user:'admin', fp:'192.168.1.42', used:'3 天前', tone:'warn'},
+];
+const forwards = [
+  {name:'NAS 管理面板', kind:'域名', client:'nas-home', node:'node-hk', entry:'nas.ops.example.com', target:'192.168.1.10:5000', traffic:'128 G', state:'observed'},
+  {name:'办公室 RDP', kind:'端口', client:'win-office', node:'node-hk', entry:':13389', target:'192.168.1.42:3389', traffic:'42 G', state:'applied'},
+  {name:'测试库', kind:'端口', client:'prod-web-01', node:'node-sg', entry:':23306', target:'10.0.3.21:3306', traffic:'—', state:'saved'},
+  {name:'CI 私有隧道', kind:'隧道', client:'ci-runner', node:'node-sg', entry:'vkey ••••9f2a', target:'10.0.3.30:8080', traffic:'386 G', state:'observed'},
+  {name:'分支 P2P', kind:'P2P', client:'dev-laptop', node:'node-fra', entry:'relay · vkey ••••c14d', target:'192.168.8.20:22', traffic:'18 G', state:'applied'},
+];
+const findings = [
+  {sev:'crit', title:'根分区使用率 87%', where:'db-master · /dev/vda1', ev:'df -h: 87% used, 12G available', fix:'清理 /var/log 或扩容'},
+  {sev:'warn', title:'SSH 允许口令登录', where:'prod-web-01', ev:'PasswordAuthentication yes', fix:'改为 no，使用密钥 + 堡垒机'},
+  {sev:'info', title:'内核有 2 条 OOM 记录', where:'prod-web-01', ev:'dmesg: Out of memory: Killed process 1842', fix:'检查内存限制'},
+];
+const audit = [
+  {time:'18:42:09', title:'reveal · prod-web 巡检私钥', sub:'admin · 127.0.0.1 · step-up OK'},
+  {time:'18:31:44', title:'session · 家里的 NAS', sub:'admin · ssh · 4m 12s · recorded'},
+  {time:'18:22:10', title:'check · redis 6379 down', sub:'system · 连续 3 次失败 · alert sent'},
+  {time:'18:03:00', title:'inspection · linux-basic', sub:'scheduler · score 92 · 3 findings'},
+  {time:'17:58:31', title:'forward · 测试库 applied', sub:'prod-web-01 · rev 41 · hash 8f2c'},
+];
+
+/* ---------- render ---------- */
+$('#spark-online').innerHTML = sparkline(gen(14, 11, 1.6, 1), 'var(--ok)');
+$('#spark-forwards').innerHTML = sparkline(gen(14, 25, 3, 2), 'var(--accent)');
+$('#spark-checks').innerHTML = sparkline(gen(14, 4, 1.4, 3), 'var(--warn)');
+$('#spark-alerts').innerHTML = sparkline(gen(14, 2, 1.1, 4), 'var(--crit)');
+$('#spark-perf-cpu').innerHTML = sparkline(perfCpu.slice(-20), 'var(--accent)');
+$('#spark-perf-mem').innerHTML = sparkline(perfMem.slice(-20), 'var(--warn)');
+$('#spark-perf-net').innerHTML = sparkline(perfRx.slice(-20), 'var(--accent-2)');
+
+$('#chart-cluster').innerHTML = multiChart([
+  {values: overviewCpu, color:'#1677ff'},
+  {values: overviewMem, color:'#13c2c2'},
+], 620, 190, 230);
+$('#chart-cpu').innerHTML = multiChart([
+  {values: perfCpu, color:'#1677ff'},
+  {values: gen(48, 7, 3, 9), color:'#13c2c2'},
+], 620, 180, 210);
+$('#chart-mem').innerHTML = areaChart(perfMem, '#ff7d00', 480, 180, {height:210});
+$('#chart-net').innerHTML = multiChart([
+  {values: perfRx, color:'#1677ff'},
+  {values: perfTx, color:'#9d7bff'},
+], 620, 180, 210);
+$('#ring-health').innerHTML = ring(75, '#00b42a', 112, 'HEALTHY');
+$('#ring-inspection').innerHTML = ring(92, '#ff7d00', 126, 'SCORE');
+
+$('#alert-list').innerHTML = alerts.map(a => `
+  <div class="alert-row">
+    <div class="alert-icon ${a.sev==='warn'?'warn':a.sev==='info'?'info':''}"><svg class="icon sm"><use href="#i-alert"/></svg></div>
+    <div class="alert-main"><div class="alert-title">${a.title}</div><div class="alert-meta">${a.meta}</div></div>
+    <button class="btn sm ghost">${a.action}</button>
+  </div>`).join('');
+$('#monitor-alerts').innerHTML = alerts.slice(0,2).map(a => `
+  <div class="alert-row">
+    <div class="alert-icon ${a.sev==='warn'?'warn':'info'}"><svg class="icon sm"><use href="#i-alert"/></svg></div>
+    <div class="alert-main"><div class="alert-title">${a.title}</div><div class="alert-meta">${a.meta}</div></div>
+  </div>`).join('');
+
+$('#device-list').innerHTML = devices.map(d => `
+  <div class="device-row">
+    <div class="device-ico"><svg class="icon"><use href="#i-server"/></svg></div>
+    <div class="device-main">
+      <div class="device-name">${d.name} <span class="led ${d.state==='up'?'ok':'warn'}"></span></div>
+      <div class="device-meta">${d.ip}</div>
+    </div>
+    <div class="device-bars">
+      <div class="bar-box"><div class="bar-label"><span>CPU</span><span>${d.cpu}%</span></div><div class="bar ${d.cpu>70?'warn':''}"><i style="width:${d.cpu}%"></i></div></div>
+      <div class="bar-box"><div class="bar-label"><span>MEM</span><span>${d.mem}%</span></div><div class="bar ${d.mem>70?'warn':''}"><i style="width:${d.mem}%"></i></div></div>
+    </div>
+    <span class="pill ${d.state==='up'?'ok':'warn'}">${d.state==='up'?'ONLINE':'STALE'}</span>
+  </div>`).join('');
+
+$('#check-list').innerHTML = checks.map((c,i) => {
+  const tone = c.state==='up'?'ok':c.state==='warn'?'warn':'crit';
+  const series = gen(18, c.state==='down'?1:8, c.state==='down'?0.4:2.4, i+2);
+  return `<div class="device-row">
+    <span class="led ${tone} ${c.state==='down'?'':'pulse'}"></span>
+    <div class="device-main"><div class="device-name">${c.name}</div><div class="device-meta">${c.target} · ${c.note}</div></div>
+    <div style="width:96px;flex:none">${sparkline(series, c.state==='up'?'var(--ok)':c.state==='warn'?'var(--warn)':'var(--crit)', 96, 24)}</div>
+    <div class="mono" style="width:54px;text-align:right;color:var(--muted)">${c.latency?c.latency+'ms':'—'}</div>
+    <span class="pill ${tone}">${c.state.toUpperCase()}</span>
+  </div>`;
+}).join('');
+
+$('#asset-grid').innerHTML = assets.map(a => `
+  <div class="panel col-6 asset-card">
+    <div class="asset-head">
+      <div class="asset-ico"><svg class="icon"><use href="#i-${a.proto==='RDP'?'server':a.proto==='MySQL'?'database':'server'}"/></svg></div>
+      <div style="flex:1;min-width:0"><div class="asset-name">${a.name}</div><div class="asset-ip">${a.ip} · ${a.os}</div></div>
+      <span class="pill ${a.state==='reachable'?'ok':'warn'}">${a.state==='reachable'?'REACHABLE':'STALE'}</span>
+    </div>
+    <div class="asset-path">
+      <span class="path-chip">控制面</span><span class="path-arrow">→</span>
+      <span class="path-chip">node-hk</span><span class="path-arrow">→</span>
+      <span class="path-chip accent">${a.via}</span><span class="path-arrow">→</span>
+      <span class="path-chip">${a.ip.split(':')[0]}</span>
+    </div>
+    <div class="asset-foot">
+      <div class="chips">${a.tags.map(t=>`<span class="tag">${t}</span>`).join('')}<span class="tag">${a.proto}</span></div>
+      <button class="btn sm primary" style="margin-left:auto">连接<svg class="icon sm"><use href="#i-arrow"/></svg></button>
+    </div>
+  </div>`).join('');
+
+$('#vault-list').innerHTML = creds.map((c,i) => `
+  <div class="vault-row">
+    <div class="vault-ico"><svg class="icon"><use href="#i-key"/></svg></div>
+    <div class="vault-main">
+      <div class="vault-name">${c.name}</div>
+      <div class="vault-meta"><span>${c.kind}</span><span>${c.user}</span><span>${c.fp}</span><span>${c.used}</span></div>
+    </div>
+    <div class="vault-secret">••••••••••••</div>
+    <button class="btn sm ghost" onclick="openModal()">查看</button>
+  </div>`).join('');
+
+$('#forward-body').innerHTML = forwards.map(f => {
+  const tone = f.state==='observed'?'ok':f.state==='applied'?'info':'warn';
+  return `<tr>
+    <td data-label="名称"><span class="row-title">${f.name}</span></td>
+    <td data-label="类型"><span class="tag">${f.kind}</span></td>
+    <td data-label="客户端"><span class="mono">${f.client}</span></td>
+    <td data-label="节点"><span class="mono">${f.node}</span></td>
+    <td data-label="公开入口"><span class="mono" style="color:var(--accent)">${f.entry}</span></td>
+    <td data-label="目标"><span class="mono">${f.target}</span></td>
+    <td data-label="7 天流量"><span class="mono">${f.traffic}</span></td>
+    <td data-label="状态"><span class="pill ${tone}">${f.state.toUpperCase()}</span></td>
+    <td data-label=""><button class="btn sm ghost">管理</button></td>
+  </tr>`;
+}).join('');
+
+$('#finding-list').innerHTML = findings.map(f => `
+  <div class="finding">
+    <div class="finding-sev ${f.sev}"></div>
+    <div class="finding-main">
+      <div class="finding-title">${f.title}</div>
+      <div class="finding-meta">${f.where} · 建议：${f.fix}</div>
+      <div class="finding-code">${f.ev}</div>
+    </div>
+    <span class="pill ${f.sev==='crit'?'crit':f.sev==='warn'?'warn':'info'}">${f.sev.toUpperCase()}</span>
+  </div>`).join('');
+
+$('#run-body').innerHTML = [
+  ['#R-1042','schedule','42s','92','warning'],
+  ['#R-1041','schedule','38s','96','ok'],
+  ['#R-1040','manual','41s','94','ok'],
+  ['#R-1039','schedule','39s','88','warning'],
+].map(r => `<tr>
+  <td data-label="运行"><span class="mono">${r[0]}</span></td>
+  <td data-label="触发"><span class="mono">${r[1]}</span></td>
+  <td data-label="耗时"><span class="mono">${r[2]}</span></td>
+  <td data-label="评分"><span class="mono">${r[3]}</span></td>
+  <td data-label="结果"><span class="pill ${r[4]==='ok'?'ok':'warn'}">${r[4].toUpperCase()}</span></td>
+</tr>`).join('');
+
+$('#mount-list').innerHTML = [
+  ['/','ext4',71,'ok'],['/data','xfs',54,'ok'],['/var/log','ext4',88,'warn']
+].map(m => `<div style="margin-bottom:14px">
+  <div class="bar-label" style="margin-bottom:6px"><span class="mono">${m[0]}</span><span class="mono">${m[2]}% · ${m[1]}</span></div>
+  <div class="bar ${m[3]}"><i style="width:${m[2]}%"></i></div>
+</div>`).join('');
+
+$('#proc-body').innerHTML = [
+  ['1842','node','18.4','12.2','1.8G','running'],
+  ['921','mysqld','12.6','31.4','4.2G','running'],
+  ['3120','nginx','6.2','4.1','512M','running'],
+  ['4471','python3','3.8','2.9','286M','sleeping'],
+  ['512','systemd','0.4','0.6','18M','running'],
+].map(p => `<tr>
+  <td data-label="PID"><span class="mono">${p[0]}</span></td>
+  <td data-label="进程"><span class="row-title">${p[1]}</span></td>
+  <td data-label="CPU"><span class="mono" style="color:var(--accent)">${p[2]}%</span></td>
+  <td data-label="MEM"><span class="mono">${p[3]}%</span></td>
+  <td data-label="RSS"><span class="mono">${p[4]}</span></td>
+  <td data-label="状态"><span class="pill ${p[5]==='running'?'ok':'muted'}">${p[5]}</span></td>
+</tr>`).join('');
+
+$('#datasource-list').innerHTML = [
+  ['MySQL · db-master','10.0.3.21:3306 · readonly','ok'],
+  ['PostgreSQL · analytics','10.0.3.31:5432 · readonly','ok'],
+  ['SQLite · local','/var/lib/aibot/data.db','muted'],
+].map(d => `<div class="device-row">
+  <div class="device-ico" style="background:rgba(91,140,255,.07);border-color:rgba(91,140,255,.16);color:var(--accent-2)"><svg class="icon"><use href="#i-database"/></svg></div>
+  <div class="device-main"><div class="device-name">${d[0]}</div><div class="device-meta">${d[1]}</div></div>
+  <span class="pill ${d[2]}">${d[2]==='ok'?'READY':'LOCAL'}</span>
+</div>`).join('');
+
+const prompts = [
+  ['巡检摘要','汇总指标与发现项，输出结论/证据/建议'],
+  ['故障定位','按告警、变更、指标排序最可能原因'],
+  ['变更方案','生成步骤、影响面、回滚与验证'],
+  ['日志分析','聚类异常并输出时间线'],
+];
+$('#prompt-list').innerHTML = prompts.map(p => `
+  <div class="prompt-item">
+    <svg class="icon sm" style="color:var(--accent)"><use href="#i-spark"/></svg>
+    <div style="flex:1;min-width:0"><div class="prompt-name">${p[0]}</div><div class="prompt-desc">${p[1]}</div></div>
+    <svg class="icon sm" style="color:var(--muted)"><use href="#i-chevron"/></svg>
+  </div>`).join('');
+
+const providers = [
+  ['DeepSeek V4','api.deepseek.com · tools · cache','256K','PRIMARY','ok'],
+  ['Claude','api.anthropic.com · tools','200K','FALLBACK','muted'],
+  ['Gemini','generativelanguage.googleapis.com','1M','LONG','info'],
+  ['本地 vLLM','10.0.3.50:8000 · 私有网络','128K','LOCAL','warn'],
+];
+$('#provider-list').innerHTML = providers.map(p => `
+  <div class="device-row">
+    <div class="device-ico"><svg class="icon"><use href="#i-spark"/></svg></div>
+    <div class="device-main"><div class="device-name">${p[0]}</div><div class="device-meta">${p[1]}</div></div>
+    <div class="mono" style="color:var(--accent);margin-right:10px">${p[2]}</div>
+    <span class="pill ${p[4]}">${p[3]}</span>
+  </div>`).join('');
+
+const toolCalls = [
+  ['18:44:02','propose_cleanup','db-master','MEDIUM','proposed'],
+  ['18:43:51','run_readonly_sql','db-master','READ','executed'],
+  ['18:43:40','get_metrics','db-master','READ','executed'],
+  ['18:31:12','propose_restart','prod-web-01','LOW','approved'],
+];
+$('#tool-body').innerHTML = toolCalls.map(t => {
+  const riskTone = t[3]==='MEDIUM'?'warn':t[3]==='READ'?'muted':'info';
+  const statusTone = t[4]==='proposed'?'warn':t[4]==='executed'?'ok':'info';
+  return `<tr>
+    <td data-label="时间"><span class="mono">${t[0]}</span></td>
+    <td data-label="工具"><span class="mono" style="color:var(--accent-2)">${t[1]}</span></td>
+    <td data-label="目标"><span class="mono">${t[2]}</span></td>
+    <td data-label="风险"><span class="pill ${riskTone}">${t[3]}</span></td>
+    <td data-label="状态"><span class="pill ${statusTone}">${t[4].toUpperCase()}</span></td>
+    <td data-label="操作"><button class="btn sm ghost">${t[4]==='proposed'?'审批':'详情'}</button></td>
+  </tr>`;
+}).join('');
+
+$('#vault-audit').innerHTML = audit.slice(0,4).map(a => `
+  <div class="tl-item"><div class="tl-time">${a.time}</div><div class="tl-title">${a.title}</div><div class="tl-sub">${a.sub}</div></div>`).join('');
+$('#audit-list').innerHTML = audit.map(a => `
+  <div class="tl-item"><div class="tl-time">${a.time}</div><div class="tl-title">${a.title}</div><div class="tl-sub">${a.sub}</div></div>`).join('');
+
+function copyCode(){
+  const text = 'ssh -J ops@node-hk:18022 root@192.168.1.10';
+  navigator.clipboard?.writeText(text);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+FROM golang:1.27.3 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/agent ./cmd/agent
+COPY internal ./internal
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/agent ./cmd/agent
+
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /out/agent /agent
+USER 65532:65532
+ENV AIBOT_AGENT_STATE=/state
+ENTRYPOINT ["/agent"]

@@ -1,0 +1,8 @@
+# Offline image build context: a static Linux amd64 binary named agent,
+# plus ca-certificates.crt from a trusted OS certificate bundle.
+FROM scratch
+COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY agent /agent
+USER 65532:65532
+ENV AIBOT_AGENT_STATE=/state
+ENTRYPOINT ["/agent"]

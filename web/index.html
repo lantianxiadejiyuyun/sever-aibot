@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light" data-theme-mode="auto">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" id="theme-color" content="#f4f7fb" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" id="apple-status" content="default" />
+    <meta name="apple-mobile-web-app-title" content="AIBOT" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>AI 运维控制台 · AIBOT</title>
+    <!--
+      Pre-paint theme bootstrap. The Go control plane sends
+      Content-Security-Policy: script-src 'self', which blocks inline <script>.
+      A tiny same-origin synchronous script keeps the first paint flash-free
+      without weakening CSP.
+    -->
+    <script src="/theme-init.js"></script>
+    <style>
+      html { background: #f4f7fb; }
+      html[data-theme='dark'] { background: #0f141a; }
+      body { margin: 0; }
+      #app { min-height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

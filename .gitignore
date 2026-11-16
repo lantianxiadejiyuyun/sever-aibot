@@ -19,3 +19,21 @@ runtime/
 playwright-report/
 test-results/
 /docs/private/
+
+# Go build output and local state
+/bin/
+/var/
+*.exe
+*.test
+coverage.out
+web/node_modules/
+# The built console is kept in the repository so a clean checkout can run
+# `go build` and `go test` without Node.js. `npm run build` refreshes it.
+!web/dist/
+.env.local
+
+# Local browser verification artifacts
+.playwright-mcp/
+/ui-*.png
+/web-console-*.png
+

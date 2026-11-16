@@ -1,0 +1,27 @@
+[Unit]
+Description=AI operations relay node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=server-aibot-node
+Group=server-aibot-node
+EnvironmentFile=/etc/server-aibot/node.env
+ExecStart=/opt/server-aibot/bin/node
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/server-aibot-node
+# Only needed when entry ports below 1024 are assigned to this node.
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
