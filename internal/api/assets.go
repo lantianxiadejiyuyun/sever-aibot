@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -92,6 +93,12 @@ func validAssetProtocol(protocol string) bool {
 // validateAsset checks shape and references. The via chain is walked here so
 // an update cannot introduce a cycle.
 func (s *Server) validateAsset(r *http.Request, a *store.Asset) error {
+	if a.ViaDeviceID != "" && a.ViaAssetID != "" {
+		return errors.New("不能同时指定 Agent 和 SSH 跳板")
+	}
+	if strings.ContainsAny(a.Address, "\r\n\t /\\") {
+		return errors.New("资产地址必须为主机名或 IP")
+	}
 	if a.Name == "" {
 		return errors.New("资产名称不能为空")
 	}
@@ -167,6 +174,10 @@ func (s *Server) createAsset(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.HostKey != nil && *req.HostKey != "" {
+		writeErr(w, 400, "hostkey_confirmation_required", "请通过主机指纹确认接口固定指纹")
+		return
+	}
 	a := store.Asset{Port: 22, Protocol: "ssh", Enabled: true}
 	applyAssetRequest(&a, req)
 	if err := s.validateAsset(r, &a); err != nil {
@@ -204,7 +215,15 @@ func (s *Server) updateAsset(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.HostKey != nil && *req.HostKey != existing.HostKey {
+		writeErr(w, 400, "hostkey_confirmation_required", "请通过主机指纹确认接口固定指纹")
+		return
+	}
+	before := *existing
 	applyAssetRequest(existing, req)
+	if before.Address != existing.Address || before.Port != existing.Port || before.ViaAssetID != existing.ViaAssetID || before.ViaDeviceID != existing.ViaDeviceID || before.Protocol != existing.Protocol {
+		existing.HostKey = ""
+	}
 	if err := s.validateAsset(r, existing); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_argument", err.Error())
 		return
@@ -246,7 +265,33 @@ func (s *Server) assetRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) checkAsset(w http.ResponseWriter, r *http.Request) {
-	writeErr(w, http.StatusNotImplemented, "not_implemented", "资产连通性检查将在 Agent 中继就绪后提供")
+	if !s.accessStepUp(w, r) {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	a, err := s.store.GetAsset(r.Context(), id)
+	if err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	c, err := s.dialAsset(ctx, id)
+	if c != nil {
+		c.Close()
+	}
+	latency := int(time.Since(start).Milliseconds())
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	if saveErr := s.store.SaveAssetCheck(r.Context(), id, a.ViaDeviceID, err == nil, latency, message); saveErr != nil {
+		s.storeErr(w, saveErr)
+		return
+	}
+	s.audit(r, "asset.check", id, map[string]any{"ok": err == nil})
+	writeJSON(w, 200, map[string]any{"ok": err == nil, "latencyMs": latency, "error": message})
 }
 
 func (s *Server) assetSSHConfig(w http.ResponseWriter, r *http.Request) {

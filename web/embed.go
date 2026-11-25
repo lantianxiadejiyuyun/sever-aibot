@@ -30,7 +30,9 @@ func Handler() http.Handler {
 		if clean == "." || clean == "" {
 			clean = "index.html"
 		}
-		if _, err := fs.Stat(sub, clean); err != nil {
+		if info, err := fs.Stat(sub, clean); err != nil || info.IsDir() {
+			// /assets is also an application route. Never hand directories to
+			// FileServer: its redirect would conflict with the SPA inventory.
 			clean = "index.html"
 		}
 		if strings.HasPrefix(clean, "assets/") {

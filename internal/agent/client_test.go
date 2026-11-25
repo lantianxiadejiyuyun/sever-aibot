@@ -60,12 +60,23 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// These fixtures implement only the control socket, not the access transport.
+func controlOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		next(w, r)
+	}
+}
+
 func TestRunHandshake(t *testing.T) {
 	hellos := make(chan model.AgentFrame, 4)
 	beats := make(chan struct{}, 16)
 	headers := make(chan [3]string, 4)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(controlOnly(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case headers <- [3]string{
 			r.Header.Get("X-Device-ID"),
@@ -100,6 +111,9 @@ func TestRunHandshake(t *testing.T) {
 				_ = conn.Write(r.Context(), websocket.MessageText,
 					marshalFrame(model.AgentFrame{Type: "hello_ack", Version: "1", OK: true}))
 			case "heartbeat":
+				if f.Metrics == nil || f.Metrics.CollectedAt.IsZero() || len(f.Metrics.Status) != 6 {
+					t.Error("heartbeat missing metric sample")
+				}
 				select {
 				case beats <- struct{}{}:
 				default:
@@ -191,7 +205,7 @@ func TestRunReconnectsAfterDrop(t *testing.T) {
 	var conns atomic.Int32
 	secondAck := make(chan struct{}, 1)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(controlOnly(func(w http.ResponseWriter, r *http.Request) {
 		n := conns.Add(1)
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -268,11 +282,60 @@ func TestRunReconnectsAfterDrop(t *testing.T) {
 	}
 }
 
+func TestRunUnacknowledgedSessionRetriesAndCancels(t *testing.T) {
+	var connections atomic.Int32
+	srv := httptest.NewServer(controlOnly(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		connections.Add(1)
+		// Accept and read hello/heartbeats, but never acknowledge anything.
+		for {
+			if _, _, err := conn.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	c := newTestClient(t, Config{ControlURL: srv.URL, DeviceID: "unacked", DeviceKey: "secret", ReadTimeout: 50 * time.Millisecond, ReconnectBase: 200 * time.Millisecond, ReconnectMax: time.Second}, quietLogger())
+	c.jitter = func(d time.Duration) time.Duration { return d }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	defer cancel()
+	go func() { done <- c.Run(ctx) }()
+	waitFor(t, 5*time.Second, "second unacknowledged timeout", func() bool { return c.State().RetryAttempt == 2 && !c.State().NextRetryAt.IsZero() })
+	s := c.State()
+	if connections.Load() != 2 || !s.LastHelloAckAt.IsZero() || s.Connected {
+		t.Fatalf("unexpected unacknowledged state: %+v", s)
+	}
+	if remaining := time.Until(s.NextRetryAt); remaining < 200*time.Millisecond || remaining > 400*time.Millisecond {
+		t.Fatalf("backoff not doubled: %v", remaining)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel did not interrupt backoff")
+	}
+	if s := c.State(); s.Connected || s.RetryAttempt != 0 || !s.NextRetryAt.IsZero() {
+		t.Fatalf("stale stopped state: %+v", s)
+	}
+	time.Sleep(450 * time.Millisecond)
+	if connections.Load() != 2 {
+		t.Fatal("retried after cancellation")
+	}
+}
+
 func TestRunLivenessTimeoutReconnects(t *testing.T) {
 	var conns atomic.Int32
 	firstAck := make(chan struct{}, 1)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(controlOnly(func(w http.ResponseWriter, r *http.Request) {
 		conns.Add(1)
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -346,7 +409,7 @@ func TestDeviceKeyNeverLogged(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	beats := make(chan struct{}, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(controlOnly(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
@@ -369,6 +432,9 @@ func TestDeviceKeyNeverLogged(t *testing.T) {
 				_ = conn.Write(r.Context(), websocket.MessageText,
 					marshalFrame(model.AgentFrame{Type: "hello_ack", Version: "1", OK: true}))
 			case "heartbeat":
+				if f.Metrics == nil || f.Metrics.CollectedAt.IsZero() || len(f.Metrics.Status) != 6 {
+					t.Error("heartbeat missing metric sample")
+				}
 				select {
 				case beats <- struct{}{}:
 				default:

@@ -67,12 +67,12 @@ func Pipe(a, b io.ReadWriteCloser) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(a, b)
+		_, _ = io.CopyBuffer(a, b, make([]byte, 65535))
 		_ = a.Close()
 	}()
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(b, a)
+		_, _ = io.CopyBuffer(b, a, make([]byte, 65535))
 		_ = b.Close()
 	}()
 	wg.Wait()

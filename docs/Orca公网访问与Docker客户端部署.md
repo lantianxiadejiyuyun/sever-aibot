@@ -120,6 +120,49 @@ docker compose -f compose.yaml up -d --no-build --force-recreate
 
 本次更新前保留的回退镜像标签为 `server-aibot-agent:before-ws-update`。该旧镜像不支持当前配置使用的 WSS 中继地址，不应作为日常运行版本。
 
+## iStoreOS 开机自启动与挂载保护
+
+2026-11-17 后续检查发现 `/dev/sda4` 未挂载，Docker 在 `/mnt` 的 tmpfs 路径下启动，因而看不到磁盘中原有的容器。停止 Docker、重新挂载分区后，原部署文件和镜像恢复可见，客户端成功启动。
+
+已增加以下配置和保护：
+
+| 文件 | 用途 |
+|---|---|
+| `/etc/config/server_aibot` | 数据分区 UUID、挂载路径、等待时间和 Compose 路径 |
+| `/usr/sbin/aibot-storage-ready` | 校验已挂载分区 UUID；未挂载时等待设备并挂载 ext4 |
+| `/etc/init.d/dockerd` | 启动 Docker 前调用挂载检查，失败则拒绝启动 Docker |
+| `/etc/init.d/server-aibot-agent` | 开机等待 Docker 就绪，再通过 Compose 启动 Agent |
+| `/root/dockerd.before-aibot-storage` | 修改前的 Docker 启动脚本备份 |
+
+`/etc/config/server_aibot` 的实际配置：
+
+```uci
+config storage 'storage'
+    option uuid 'f63061fe-e3d3-4c1a-a75e-4e844ffce5a0'
+    option target '/mnt/sda4'
+    option wait_seconds '30'
+
+config agent 'agent'
+    option compose_file '/mnt/sda4/server-aibot-agent/compose.yaml'
+```
+
+Docker 和 Agent 启动项均已启用。Docker 的 S99 启动项先执行挂载保护，Agent 的 S99 启动项随后等待 Docker 就绪。设备尚未就绪时，挂载检查最多等待约 30 秒；UUID 不匹配或挂载失败时停止本次启动，不在内存文件系统上继续初始化 Docker。
+
+```sh
+# 检查挂载和开机启动设置
+/usr/sbin/aibot-storage-ready
+/etc/init.d/dockerd enabled
+/etc/init.d/server-aibot-agent enabled
+
+# 使用系统服务管理客户端
+/etc/init.d/server-aibot-agent start
+/etc/init.d/server-aibot-agent stop
+/etc/init.d/server-aibot-agent restart
+/etc/init.d/server-aibot-agent status
+```
+
+脚本源码保存在仓库的 [存储检查脚本](../deploy/istoreos-storage-ready.sh) 和 [Agent 启动脚本](../deploy/server-aibot-agent.init)。已完成 shell 语法检查，并实际重启 Docker 验证 Agent 恢复在线、公网返回 Orca Web HTTP 200；没有重启整台主机验证完整开机过程。若系统升级覆盖 `/etc/init.d/dockerd`，需要重新添加 `start_service()` 开头的 `/usr/sbin/aibot-storage-ready || return 1` 检查。
+
 ## 常用管理命令
 
 以下命令在 iStoreOS SSH 终端执行。

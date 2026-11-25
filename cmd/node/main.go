@@ -8,6 +8,8 @@
 //	AIBOT_NODE_ID             node identifier created by the control plane
 //	AIBOT_NODE_KEY            one-time node key (never logged)
 //	AIBOT_NODE_TUNNEL_LISTEN  tunnel listen address (default 0.0.0.0:7000)
+//	AIBOT_NODE_TUNNEL_TRANSPORT tcp (default), kcp or quic; UDP requires TLS
+//	AIBOT_NODE_RENDEZVOUS_LISTEN optional separate UDP rendezvous bind address
 //	AIBOT_NODE_ENTRY_HOST     entry bind address (default 0.0.0.0)
 //	AIBOT_NODE_TLS_CERT       optional tunnel TLS certificate (PEM)
 //	AIBOT_NODE_TLS_KEY        optional tunnel TLS private key (PEM)
@@ -48,15 +50,17 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	runner, err := node.New(node.Config{
-		ControlURL:   cfg.ControlURL,
-		NodeID:       cfg.NodeID,
-		NodeKey:      cfg.NodeKey,
-		StateDir:     cfg.StateDir,
-		TunnelListen: cfg.TunnelListen,
-		EntryHost:    cfg.EntryHost,
-		TLSCert:      cfg.TLSCert,
-		TLSKey:       cfg.TLSKey,
-		TunnelHTTP:   cfg.TunnelHTTP,
+		ControlURL:       cfg.ControlURL,
+		NodeID:           cfg.NodeID,
+		NodeKey:          cfg.NodeKey,
+		StateDir:         cfg.StateDir,
+		TunnelListen:     cfg.TunnelListen,
+		TunnelTransport:  cfg.TunnelTransport,
+		RendezvousListen: cfg.RendezvousListen,
+		EntryHost:        cfg.EntryHost,
+		TLSCert:          cfg.TLSCert,
+		TLSKey:           cfg.TLSKey,
+		TunnelHTTP:       cfg.TunnelHTTP,
 	}, log)
 	if err != nil {
 		return err
@@ -65,7 +69,7 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	transport := "tcp"
+	transport := cfg.TunnelTransport
 	if cfg.TunnelHTTP {
 		transport = "websocket"
 	}

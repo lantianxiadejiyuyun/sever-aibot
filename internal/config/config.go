@@ -46,14 +46,16 @@ type Agent struct {
 
 // Node is the configuration of cmd/node, the runtime on a public relay node.
 type Node struct {
-	ControlURL   string
-	NodeID       string
-	NodeKey      string
-	StateDir     string
-	TunnelListen string
-	EntryHost    string
-	TLSCert      string
-	TLSKey       string
+	ControlURL       string
+	NodeID           string
+	NodeKey          string
+	StateDir         string
+	TunnelListen     string
+	TunnelTransport  string
+	RendezvousListen string
+	EntryHost        string
+	TLSCert          string
+	TLSKey           string
 	// TunnelHTTP serves the tunnel as a WebSocket at /tunnel so an nginx
 	// vhost can terminate TLS and proxy wss:// to it.
 	TunnelHTTP bool
@@ -119,21 +121,29 @@ func LoadAgent() (Agent, error) {
 // only for the control-plane WebSocket.
 func LoadNode() (Node, error) {
 	n := Node{
-		ControlURL:   strings.TrimSpace(os.Getenv("AIBOT_CONTROL_URL")),
-		NodeID:       strings.TrimSpace(os.Getenv("AIBOT_NODE_ID")),
-		NodeKey:      strings.TrimSpace(os.Getenv("AIBOT_NODE_KEY")),
-		StateDir:     env("AIBOT_NODE_STATE", "var/node"),
-		TunnelListen: env("AIBOT_NODE_TUNNEL_LISTEN", "0.0.0.0:7000"),
-		EntryHost:    env("AIBOT_NODE_ENTRY_HOST", "0.0.0.0"),
-		TLSCert:      strings.TrimSpace(os.Getenv("AIBOT_NODE_TLS_CERT")),
-		TLSKey:       strings.TrimSpace(os.Getenv("AIBOT_NODE_TLS_KEY")),
-		TunnelHTTP:   envBool("AIBOT_NODE_TUNNEL_HTTP", false),
+		ControlURL:       strings.TrimSpace(os.Getenv("AIBOT_CONTROL_URL")),
+		NodeID:           strings.TrimSpace(os.Getenv("AIBOT_NODE_ID")),
+		NodeKey:          strings.TrimSpace(os.Getenv("AIBOT_NODE_KEY")),
+		StateDir:         env("AIBOT_NODE_STATE", "var/node"),
+		TunnelListen:     env("AIBOT_NODE_TUNNEL_LISTEN", "0.0.0.0:7000"),
+		TunnelTransport:  strings.ToLower(env("AIBOT_NODE_TUNNEL_TRANSPORT", "tcp")),
+		RendezvousListen: strings.TrimSpace(os.Getenv("AIBOT_NODE_RENDEZVOUS_LISTEN")),
+		EntryHost:        env("AIBOT_NODE_ENTRY_HOST", "0.0.0.0"),
+		TLSCert:          strings.TrimSpace(os.Getenv("AIBOT_NODE_TLS_CERT")),
+		TLSKey:           strings.TrimSpace(os.Getenv("AIBOT_NODE_TLS_KEY")),
+		TunnelHTTP:       envBool("AIBOT_NODE_TUNNEL_HTTP", false),
 	}
 	if n.ControlURL == "" || n.NodeID == "" || n.NodeKey == "" {
 		return n, errors.New("AIBOT_CONTROL_URL, AIBOT_NODE_ID and AIBOT_NODE_KEY are required")
 	}
 	if (n.TLSCert == "") != (n.TLSKey == "") {
 		return n, errors.New("AIBOT_NODE_TLS_CERT and AIBOT_NODE_TLS_KEY must be set together")
+	}
+	if n.TunnelTransport != "tcp" && n.TunnelTransport != "kcp" && n.TunnelTransport != "quic" {
+		return n, errors.New("AIBOT_NODE_TUNNEL_TRANSPORT must be tcp, kcp or quic")
+	}
+	if n.TunnelTransport != "tcp" && (n.TLSCert == "" || n.TunnelHTTP) {
+		return n, errors.New("KCP/QUIC require node TLS certificate and key and cannot use AIBOT_NODE_TUNNEL_HTTP")
 	}
 	return n, nil
 }

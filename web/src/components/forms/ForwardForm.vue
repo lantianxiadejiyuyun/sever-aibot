@@ -47,6 +47,14 @@ const form = reactive<ForwardInput>({
 })
 
 const localError = ref('')
+const protocol = ref('tcp')
+const relayAllowed = computed({
+  get: () => { try { return JSON.parse(form.options || '{}').relay !== false } catch { return true } },
+  set: (value: boolean) => {
+    try { form.options = JSON.stringify({ ...JSON.parse(form.options || '{}'), relay: value }) }
+    catch { localError.value = '请先修正高级选项 JSON。' }
+  },
+})
 
 watch(
   () => props.initial,
@@ -62,6 +70,7 @@ watch(
     form.domain = forward?.domain ?? ''
     form.tags = forward?.tags ?? ''
     form.options = forward?.options?.trim() ? forward.options : '{}'
+ try { protocol.value = (JSON.parse(form.options) as { protocol?: string }).protocol || 'tcp' } catch { protocol.value = 'tcp' }
   },
   { immediate: true },
 )
@@ -75,7 +84,8 @@ watch(
 
 const selectedNode = computed(() => props.nodes.find((node) => node.id === form.nodeId) || null)
 const nodeSupport = computed(() => nodeSupportsKind(selectedNode.value, form.kind))
-const needsPortPair = computed(() => form.kind === 'port')
+const privateAccess = computed(() => ['tunnel', 'p2p', 'proxy'].includes(form.kind))
+const needsPortPair = computed(() => form.kind === 'port' || privateAccess.value)
 const needsDomain = computed(() => form.kind === 'host')
 
 function numberValue(value: number | string): number {
@@ -115,7 +125,9 @@ function submit(): void {
     localError.value = '域名类转发必须填写域名。'
     return
   }
-  const rawOptions = form.options.trim()
+  if (!form.deviceId || !form.targetIp.trim() || targetPort < 1) { localError.value = '请选择服务设备并填写目标地址和端口。'; return }
+ if (privateAccess.value && (!form.clientId || form.clientId === form.deviceId)) { localError.value = '请选择不同于服务设备的访问设备。'; return }
+ const rawOptions = form.options.trim()
   if (rawOptions) {
     try {
       const parsed = JSON.parse(rawOptions) as unknown
@@ -137,10 +149,10 @@ function submit(): void {
     clientId: form.clientId.trim(),
     targetIp: form.targetIp.trim(),
     targetPort,
-    remotePort,
+    remotePort: needsDomain.value ? 0 : remotePort,
     domain: form.domain.trim(),
     tags: form.tags.trim(),
-    options: rawOptions || '{}',
+    options: JSON.stringify({ ...JSON.parse(rawOptions || '{}'), protocol: form.kind === 'port' ? protocol.value : 'tcp' }),
   })
 }
 </script>
@@ -174,9 +186,9 @@ function submit(): void {
         </select>
       </FormField>
 
-      <FormField label="设备" for-id="forward-device" hint="可选，绑定到具体 Agent 设备。">
+      <FormField label="服务设备" for-id="forward-device" required hint="Agent 将连接此设备可达的目标服务。">
         <select id="forward-device" v-model="form.deviceId" class="select">
-          <option value="">不绑定设备</option>
+          <option value="">请选择服务设备</option>
           <option v-for="device in devices" :key="device.id" :value="device.id">
             {{ device.name }} · {{ device.status === 'online' ? '在线' : '离线' }}
           </option>
@@ -191,7 +203,7 @@ function submit(): void {
         <input id="forward-target-port" v-model.number="form.targetPort" class="input" type="number" min="0" max="65535" inputmode="numeric" />
       </FormField>
 
-      <FormField label="公开入口端口" for-id="forward-remote-port" :required="needsPortPair" hint="必须落在节点允许的端口段内。">
+      <FormField v-if="!needsDomain" :label="privateAccess ? '访问设备本机端口' : '公开入口端口'" for-id="forward-remote-port" :required="needsPortPair" :hint="privateAccess ? '只监听访问设备的 127.0.0.1，不开放公网入口。' : '必须落在节点允许的端口段内。'">
         <input id="forward-remote-port" v-model.number="form.remotePort" class="input" type="number" min="0" max="65535" inputmode="numeric" />
       </FormField>
 
@@ -199,8 +211,13 @@ function submit(): void {
         <input id="forward-domain" v-model="form.domain" class="input mono" type="text" maxlength="200" autocomplete="off" placeholder="nas.ops.example.com" />
       </FormField>
 
-      <FormField label="客户端 ID" for-id="forward-client" hint="隧道 / P2P / 代理类型使用，可选。">
-        <input id="forward-client" v-model="form.clientId" class="input mono" type="text" maxlength="120" autocomplete="off" placeholder="可选" />
+      <FormField v-if="privateAccess" label="访问设备" for-id="forward-client" required hint="在此设备上打开私有本机入口。">
+        <select id="forward-client" v-model="form.clientId" class="select"><option value="">请选择访问设备</option><option v-for="device in devices" :key="device.id" :value="device.id" :disabled="device.id === form.deviceId">{{ device.name }}</option></select>
+      </FormField>
+      <FormField v-if="form.kind === 'port'" label="业务协议" for-id="forward-protocol" hint="UDP 入口和目标均使用真实数据报。"><select id="forward-protocol" v-model="protocol" class="select"><option value="tcp">TCP</option><option value="udp">UDP</option></select></FormField>
+
+      <FormField v-if="form.kind === 'p2p'" label="中继回退" for-id="forward-relay" hint="直连失败时，仅当此规则允许且节点未禁止中继，才可回退。">
+        <label><input id="forward-relay" v-model="relayAllowed" type="checkbox" /> 允许中继回退</label>
       </FormField>
 
       <FormField label="标签" for-id="forward-tags" hint="逗号分隔。">
@@ -211,12 +228,14 @@ function submit(): void {
         label="高级选项"
         for-id="forward-options"
         span2
-        hint='JSON 对象，例如 {"compression":true}。留空时保存为 {}。'
+        hint='P2P 可配置 directListen（服务设备监听 IP:port）与 directAddress（访问设备可达的映射 IP:port），两者均须使用 IP；不填则自动发布本机单播地址。'
       >
         <textarea id="forward-options" v-model="form.options" class="textarea" rows="4" spellcheck="false" placeholder="{}"></textarea>
       </FormField>
     </div>
 
+    <div v-if="form.kind === 'p2p'" class="notice notice-warning">优先尝试已认证的 TCP 直连；配置节点 UDP 会合地址后可自动尝试 NAT 打洞与 QUIC 直连，不可达时按规则和节点策略回退中继。对称 NAT 或禁止 UDP 的网络可能无法直连。开启节点额度、限速或连接限制时使用中继。</div>
+    <div v-if="form.kind === 'proxy'" class="notice notice-info">访问设备的本机端口同时接受 HTTP CONNECT 和 SOCKS5 CONNECT，仅允许连接此规则填写的目标地址及端口。仅本机应用可用，设备凭据提供隧道鉴权；不提供任意目标代理、SOCKS UDP 或独立用户认证。</div>
     <div class="notice notice-info" style="margin-top: 16px">
       保存只会写入控制面配置。创建后在详情页点击「下发配置」，才会推送到节点和 Agent。
     </div>

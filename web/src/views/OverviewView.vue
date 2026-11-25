@@ -12,17 +12,19 @@ import {
   Server,
 } from 'lucide-vue-next'
 import PageHeader from '@/components/ui/PageHeader.vue'
-import SampleTrafficChart from '@/components/ui/SampleTrafficChart.vue'
+import MetricHistory from '@/components/ui/MetricHistory.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import { overviewApi } from '@/api/endpoints'
-import { errorMessage } from '@/api/client'
+import { request, errorMessage } from '@/api/client'
 import type { OverviewResponse } from '@/api/types'
 import { actionLabel, timeAgo } from '@/utils/format'
 
 const overview = ref<OverviewResponse | null>(null)
 const loading = ref(true)
 const error = ref('')
+const traffic = ref<Array<{day:string;uploadBytes:number;downloadBytes:number}>>([])
+const trafficPoints = computed(() => traffic.value.map(p=>({time:p.day+'T00:00:00Z',value:(p.uploadBytes+p.downloadBytes)/1048576})).sort((a,b)=>a.time.localeCompare(b.time)))
 
 const counts = computed(() => overview.value?.counts)
 const recentAudit = computed(() => overview.value?.recentAudit ?? [])
@@ -38,7 +40,9 @@ async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    overview.value = await overviewApi.get()
+    const [data, history] = await Promise.all([overviewApi.get(), request<{items: typeof traffic.value}>('/traffic', {query:{days:7}})])
+    overview.value = data
+    traffic.value = history.items
   } catch (err) {
     error.value = errorMessage(err)
   } finally {
@@ -150,18 +154,13 @@ onMounted(load)
             <p class="panel-sub">按天聚合的入口流量趋势</p>
           </div>
           <div class="panel-actions">
-            <span class="sample-badge">示例数据</span>
+            <span class="sample-badge">真实流量 · UTC 日汇总</span>
             <span class="chart-legend"><span class="legend-dot"></span>流量</span>
           </div>
         </div>
         <div class="panel-body">
-          <SampleTrafficChart />
-          <div class="notice notice-info" style="margin-top: 14px">
-            <AlertTriangle :size="16" aria-hidden="true" />
-            <div>
-              <strong>暂无采集。</strong>流量与性能采集将在 Agent / 指标里程碑提供，此图仅用于展示图表布局，不代表真实流量。
-            </div>
-          </div>
+          <MetricHistory title="每日上下行总流量" unit="MiB" :points="trafficPoints" :gap-ms="90000000" />
+          <p class="muted">节点上报的实际转发字节数。未收到上报的日期不补零。</p>
         </div>
       </section>
 

@@ -8,6 +8,7 @@ import (
 
 type loginRequest struct {
 	Username string `json:"username"`
+	OTP      string `json:"otp"`
 	Password string `json:"password"`
 }
 
@@ -35,14 +36,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "invalid_credentials", "用户名或密码不正确")
 		return
 	}
-	s.resetLogin(ip)
-	sess, token, err := s.store.CreateSession(r.Context(), admin.ID, ip, r.UserAgent(),
-		time.Duration(s.cfg.SessionTTL)*time.Hour)
-	if err != nil {
-		s.log.Error("create session", "err", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "创建会话失败")
+	sess, token, ok := s.accountLogin(w, r, admin, req.OTP)
+	if !ok {
 		return
 	}
+	s.resetLogin(ip)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    token,

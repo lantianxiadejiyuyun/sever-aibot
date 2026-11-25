@@ -62,7 +62,7 @@ async function rotate(device: Device): Promise<void> {
   const ok = await confirmAction({
     title: '轮换设备密钥',
     message: `确认轮换「${device.name}」的设备密钥吗？`,
-    detail: '旧密钥会立即失效，正在连接的 Agent 将断开，需要用新密钥重新连接。新密钥只显示一次。',
+    detail: '旧密钥会立即失效，正在连接的 Agent 将断开，需要用新密钥重新连接。新密钥加密保存，之后可在设备详情验证身份后查看。',
     confirmText: '轮换密钥',
     danger: true,
   })
@@ -153,7 +153,7 @@ onMounted(load)
       <EmptyState
         :icon="Server"
         title="还没有设备"
-        description="创建一台设备并保存一次性密钥，然后在服务器上启动 Agent。"
+        description="创建一台设备，将设备 ID 和密钥填写到客户端，再点击保存并连接。"
       >
         <template #actions>
           <RouterLink to="/devices/new" class="btn btn-primary">
@@ -248,6 +248,7 @@ onMounted(load)
 
   <SecretDialog
     :open="secretOpen"
+    retrievable
     :secret="secretValue"
     :subject="secretSubject"
     title="新的设备密钥"

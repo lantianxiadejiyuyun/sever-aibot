@@ -227,12 +227,12 @@ func (p *Policy) checkAddr(addr netip.Addr, port int) error {
 }
 
 // DialContext validates address then dials it. Supported networks are tcp,
-// tcp4 and tcp6. The hostname is resolved once; every resolved address must
+// tcp4, tcp6, udp, udp4 and udp6. The hostname is resolved once; every resolved address must
 // pass the policy before any connection is attempted. Each dial attempt is
 // bounded by Timeout.
 func (p *Policy) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	switch network {
-	case "tcp", "tcp4", "tcp6":
+	case "tcp", "tcp4", "tcp6", "udp", "udp4", "udp6":
 	default:
 		return nil, fmt.Errorf("%w: unsupported network %q", ErrDenied, network)
 	}
@@ -251,10 +251,10 @@ func (p *Policy) DialContext(ctx context.Context, network, address string) (net.
 
 	var lastErr error
 	for _, addr := range addrs {
-		if network == "tcp4" && !addr.Is4() {
+		if (network == "tcp4" || network == "udp4") && !addr.Is4() {
 			continue
 		}
-		if network == "tcp6" && !addr.Is6() {
+		if (network == "tcp6" || network == "udp6") && !addr.Is6() {
 			continue
 		}
 		target := net.JoinHostPort(addr.String(), strconv.Itoa(port))

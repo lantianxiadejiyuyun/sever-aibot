@@ -282,8 +282,8 @@ func TestDialContextHostnameUsesVettedAddress(t *testing.T) {
 func TestDialContextRejectsBadInput(t *testing.T) {
 	p := mustPolicy(t, Config{})
 	ctx := context.Background()
-	if _, err := p.DialContext(ctx, "udp", "10.0.0.1:53"); !errors.Is(err, ErrDenied) {
-		t.Errorf("udp = %v, want ErrDenied", err)
+	if _, err := p.DialContext(ctx, "sctp", "10.0.0.1:53"); !errors.Is(err, ErrDenied) {
+		t.Errorf("sctp = %v, want ErrDenied", err)
 	}
 	if _, err := p.DialContext(ctx, "tcp", "10.0.0.1:notaport"); !errors.Is(err, ErrInvalidPort) {
 		t.Errorf("non-numeric port = %v, want ErrInvalidPort", err)

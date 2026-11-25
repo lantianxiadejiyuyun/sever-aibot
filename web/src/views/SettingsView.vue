@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { Monitor, Moon, RefreshCw, Sun } from 'lucide-vue-next'
 import PageHeader from '@/components/ui/PageHeader.vue'
+import SystemManagement from '@/components/SystemManagement.vue'
+import AccountSecurity from '@/components/AccountSecurity.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { fetchHealth } from '@/api/endpoints'
 import { errorMessage } from '@/api/client'
@@ -51,6 +53,8 @@ onMounted(loadHealth)
   <PageHeader eyebrow="SYSTEM / SETTINGS" title="设置" />
 
   <div class="stack">
+    <SystemManagement />
+    <AccountSecurity />
     <section class="panel">
       <div class="panel-head">
         <div>

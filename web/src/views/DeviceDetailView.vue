@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   AlertTriangle,
@@ -15,6 +15,8 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import SecretDialog from '@/components/ui/SecretDialog.vue'
+import StepUpDialog from '@/components/ui/StepUpDialog.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
 import { devicesApi } from '@/api/endpoints'
 import { errorMessage } from '@/api/client'
 import { confirmAction } from '@/composables/useConfirm'
@@ -34,6 +36,60 @@ const loading = ref(true)
 const error = ref('')
 const secretOpen = ref(false)
 const secretValue = ref('')
+const stepUpOpen = ref(false)
+const retainOpen = ref(false)
+const retainedKey = ref('')
+const keyBusy = ref(false)
+const keyAction = ref<'reveal' | 'retain'>('reveal')
+let secretTimer: ReturnType<typeof setTimeout> | undefined
+let generation = 0
+function clearSecret(): void {
+  secretOpen.value = false
+  secretValue.value = ''
+  if (secretTimer) clearTimeout(secretTimer)
+}
+function showSecret(value: string): void {
+  clearSecret()
+  secretValue.value = value
+  secretOpen.value = true
+  secretTimer = setTimeout(clearSecret, 60000)
+}
+function startReveal(): void { keyAction.value = 'reveal'; stepUpOpen.value = true }
+function startRetain(): void {
+  if (!retainedKey.value.trim()) return
+  keyAction.value = 'retain'; retainOpen.value = false; stepUpOpen.value = true
+}
+async function verifiedKey(): Promise<void> {
+  stepUpOpen.value = false
+  keyBusy.value = true
+  const target = id.value, current = generation
+  try {
+    if (keyAction.value === 'retain') {
+      await devicesApi.retainKey(target, retainedKey.value.trim())
+      retainedKey.value = ''
+      if (current !== generation) return
+      toast.success('当前密钥已验证并加密保存，原有连接不受影响')
+      await load()
+    } else {
+      const response = await devicesApi.revealKey(target)
+      if (current === generation) showSecret(response.deviceKey)
+    }
+  } catch (err) {
+    if (current === generation) toast.error('密钥操作失败', errorMessage(err))
+  } finally {
+    retainedKey.value = ''
+    if (current === generation) keyBusy.value = false
+  }
+}
+function clearSensitive(): void {
+  generation++
+  clearSecret()
+  retainedKey.value = ''
+  retainOpen.value = false
+  stepUpOpen.value = false
+  keyBusy.value = false
+}
+function visibilityChanged(): void { if (document.hidden) clearSensitive() }
 
 async function load(): Promise<void> {
   loading.value = true
@@ -52,16 +108,17 @@ async function rotate(): Promise<void> {
   const ok = await confirmAction({
     title: '轮换设备密钥',
     message: `确认轮换「${device.value.name}」的设备密钥吗？`,
-    detail: '旧密钥会立即失效，在线 Agent 将断开。新密钥只显示一次。',
+    detail: '旧密钥会立即失效，在线 Agent 将断开。新密钥会加密保存，之后可验证身份再次查看。',
     confirmText: '轮换密钥',
     danger: true,
   })
   if (!ok) return
   editing.value = true
+  const current = generation
   try {
     const response = await devicesApi.rotateKey(device.value.id)
-    secretValue.value = response.deviceKey
-    secretOpen.value = true
+    if (current !== generation) return
+    showSecret(response.deviceKey)
     toast.success('设备密钥已轮换')
     await load()
   } catch (err) {
@@ -94,7 +151,9 @@ async function remove(): Promise<void> {
   }
 }
 
-onMounted(load)
+watch(id, () => { clearSensitive(); void load() }, { immediate: true })
+document.addEventListener('visibilitychange', visibilityChanged)
+onBeforeUnmount(() => { clearSensitive(); document.removeEventListener('visibilitychange', visibilityChanged) })
 </script>
 
 <template>
@@ -112,7 +171,13 @@ onMounted(load)
         <Pencil :size="16" aria-hidden="true" />
         编辑
       </RouterLink>
-      <button v-if="device" type="button" class="btn" :disabled="editing" @click="rotate">
+      <button v-if="device?.keyRetrievable" type="button" class="btn btn-primary" :disabled="keyBusy" @click="startReveal">
+        <KeyRound :size="16" aria-hidden="true" />查看密钥
+      </button>
+      <button v-else-if="device" type="button" class="btn" :disabled="keyBusy" @click="retainOpen = true">
+        <KeyRound :size="16" aria-hidden="true" />保存现有密钥
+      </button>
+      <button v-if="device" type="button" class="btn" :disabled="editing || keyBusy" @click="rotate">
         <Loader2 v-if="editing" :size="16" class="spin" aria-hidden="true" />
         <RefreshCw v-else :size="16" aria-hidden="true" />
         轮换密钥
@@ -159,7 +224,7 @@ onMounted(load)
           </div>
           <div class="kv">
             <div class="kv-label">密钥存储</div>
-            <div class="kv-value">服务端仅保存密钥哈希</div>
+            <div class="kv-value">{{ device.keyRetrievable ? '密钥已加密保存，可验证身份后查看' : '旧版仅保存哈希，尚未保留可查看的密钥' }}</div>
           </div>
           <div class="kv">
             <div class="kv-label">版本</div>
@@ -222,7 +287,8 @@ onMounted(load)
           <div class="notice notice-warning" style="margin-top: 14px">
             <AlertTriangle :size="16" aria-hidden="true" />
             <div>
-              <strong>密钥不可再次查看。</strong>控制面只保存哈希，丢失或泄露时请直接轮换；旧密钥会立即失效。
+              <template v-if="device.keyRetrievable"><strong>可再次查看。</strong>点击「查看密钥」并完成二次验证；显示 60 秒或切换离开页面后自动隐藏。</template>
+              <template v-else><strong>旧版密钥尚未保留。</strong>已知当前密钥时可点击「保存现有密钥」，验证匹配后加密保存，不会断开 Agent。若已丢失则需要轮换，旧密钥将失效。</template>
             </div>
           </div>
           <div class="notice notice-info" style="margin-top: 10px">
@@ -238,8 +304,17 @@ onMounted(load)
     :open="secretOpen"
     :secret="secretValue"
     :subject="device?.name || ''"
-    title="新的设备密钥"
-    subtitle="轮换完成，请立即更新 Agent 配置"
-    @close="secretOpen = false"
+    title="设备密钥"
+    subtitle="请勿泄露；60 秒后自动隐藏"
+    confirm-text="关闭并隐藏"
+    retrievable
+    @close="clearSecret"
   />
+  <BaseModal :open="retainOpen" title="保存现有设备密钥" subtitle="验证当前密钥后加密保留，不轮换、不影响连接" @close="retainOpen = false; retainedKey = ''">
+    <label class="form-field">当前设备密钥
+      <input v-model="retainedKey" class="input" type="password" autocomplete="off" placeholder="填写当前 Agent 使用的设备密钥" />
+    </label>
+    <template #footer><button class="btn btn-primary" :disabled="!retainedKey.trim() || keyBusy" @click="startRetain">验证身份并保存</button></template>
+  </BaseModal>
+  <StepUpDialog v-if="stepUpOpen" title="验证身份以访问设备密钥" @verified="verifiedKey" @close="stepUpOpen = false; retainedKey = ''" />
 </template>

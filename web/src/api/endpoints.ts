@@ -15,10 +15,10 @@ import type {
 } from './types'
 
 export const authApi = {
-  login(username: string, credential: string): Promise<AuthSession> {
+  login(username: string, credential: string, otp = ''): Promise<AuthSession> {
     return request<AuthSession>('/auth/login', {
       method: 'POST',
-      body: { username, ['pass' + 'word']: credential },
+      body: { username, ['pass' + 'word']: credential, otp },
       skipAuthRedirect: true,
     })
   },
@@ -51,6 +51,12 @@ export const devicesApi = {
   },
   remove(id: string): Promise<{ ok: boolean }> {
     return request<{ ok: boolean }>(`/devices/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  },
+  revealKey(id: string): Promise<RotateKeyResponse> {
+    return request<RotateKeyResponse>(`/devices/${encodeURIComponent(id)}/reveal-key`, { method: 'POST' })
+  },
+  retainKey(id: string, deviceKey: string): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(`/devices/${encodeURIComponent(id)}/retain-key`, { method: 'POST', body: { deviceKey } })
   },
   rotateKey(id: string): Promise<RotateKeyResponse> {
     return request<RotateKeyResponse>(`/devices/${encodeURIComponent(id)}/rotate-key`, { method: 'POST' })

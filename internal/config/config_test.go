@@ -32,6 +32,34 @@ func TestLoadNode(t *testing.T) {
 	}
 }
 
+func TestNodeUDPTransportRequiresTLS(t *testing.T) {
+	t.Setenv("AIBOT_CONTROL_URL", "https://panel.example.com")
+	t.Setenv("AIBOT_NODE_ID", "node")
+	t.Setenv("AIBOT_NODE_KEY", "key")
+	for _, transport := range []string{"kcp", "quic"} {
+		t.Run(transport, func(t *testing.T) {
+			t.Setenv("AIBOT_NODE_TUNNEL_TRANSPORT", transport)
+			t.Setenv("AIBOT_NODE_TLS_CERT", "")
+			t.Setenv("AIBOT_NODE_TLS_KEY", "")
+			t.Setenv("AIBOT_NODE_TUNNEL_HTTP", "0")
+			if _, err := LoadNode(); err == nil {
+				t.Fatal("accepted UDP tunnel without TLS")
+			}
+			t.Setenv("AIBOT_NODE_TLS_CERT", "node.crt")
+			t.Setenv("AIBOT_NODE_TLS_KEY", "node.key")
+			t.Setenv("AIBOT_NODE_RENDEZVOUS_LISTEN", "0.0.0.0:7001")
+			n, err := LoadNode()
+			if err != nil || n.TunnelTransport != transport || n.RendezvousListen != "0.0.0.0:7001" {
+				t.Fatalf("valid UDP config: %+v %v", n, err)
+			}
+			t.Setenv("AIBOT_NODE_TUNNEL_HTTP", "1")
+			if _, err := LoadNode(); err == nil {
+				t.Fatal("accepted HTTP over UDP transport")
+			}
+		})
+	}
+}
+
 func TestLoadAgentRelayPolicy(t *testing.T) {
 	t.Setenv("AIBOT_CONTROL_URL", "https://panel.example.com")
 	t.Setenv("AIBOT_DEVICE_ID", "dev_1")

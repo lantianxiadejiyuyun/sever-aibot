@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"server-aibot/internal/access"
 	"server-aibot/internal/model"
 	"server-aibot/internal/relay"
 )
@@ -79,6 +81,7 @@ type Client struct {
 	reconnectBase time.Duration
 	reconnectMax  time.Duration
 	tunnels       *tunnelManager
+	metrics       *metricBuffer
 }
 
 // New validates cfg and constructs a Client. The device key is kept only in
@@ -140,6 +143,7 @@ func New(cfg Config, log *slog.Logger) (*Client, error) {
 		reconnectBase: cfg.ReconnectBase,
 		reconnectMax:  cfg.ReconnectMax,
 		tunnels:       newTunnelManager(cfg.DeviceID, cfg.Relay, log),
+		metrics:       &metricBuffer{},
 	}, nil
 }
 
@@ -149,12 +153,52 @@ func (c *Client) State() Snapshot { return c.state.snapshot() }
 // Run connects and reconnects until ctx is cancelled. It returns nil on a
 // clean shutdown and does not treat individual disconnects as fatal.
 func (c *Client) Run(ctx context.Context) error {
+	defer c.state.setStopped()
+	accessURL, err := url.Parse(c.endpoint)
+	if err != nil {
+		return err
+	}
+	accessURL.Path, accessURL.RawPath, accessURL.RawQuery, accessURL.Fragment = "/agent/access", "", "", ""
+	accessURL.ForceQuery = false
+	policy := c.cfg.Relay
+	if policy == nil {
+		policy, err = relay.NewPolicy(relay.Config{})
+		if err != nil {
+			return err
+		}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	metricsDone, metricsReady := make(chan struct{}), make(chan struct{})
+	go func() { defer close(metricsDone); c.metrics.run(ctx, metricsReady) }()
+	defer func() { cancel(); <-metricsDone }()
+	<-metricsReady
+	accessDone := make(chan struct{})
+	go func() {
+		defer close(accessDone)
+		attempt := 0
+		backoff := &Client{reconnectBase: c.reconnectBase, reconnectMax: c.reconnectMax, jitter: fullJitter}
+		for ctx.Err() == nil {
+			started := time.Now()
+			_ = access.RunAgent(ctx, accessURL.String(), c.cfg.DeviceID, c.cfg.DeviceKey, policy)
+			if time.Since(started) >= time.Minute {
+				attempt = 0
+			}
+			// Use independent jitter: the main reconnect loop may use a test hook.
+			delay := backoff.backoff(attempt)
+			attempt++
+			if sleepCtx(ctx, delay) != nil {
+				return
+			}
+		}
+	}()
+	defer func() { cancel(); <-accessDone }()
 	defer c.tunnels.Close()
 	attempt := 0
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
+		c.state.beginConnect()
 		acked, err := c.connectOnce(ctx)
 		if ctx.Err() != nil {
 			return nil
@@ -165,7 +209,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		delay := c.backoff(attempt)
 		attempt++
-		c.state.markReconnect()
+		c.state.markReconnect(attempt, c.now().Add(delay))
 		if err != nil {
 			c.log.Warn("agent disconnected",
 				"device", c.cfg.DeviceID,
@@ -331,6 +375,9 @@ func (c *Client) runSession(parent context.Context, conn *websocket.Conn) (bool,
 			c.tunnels.Apply(frame.Nodes)
 			c.log.Info("tunnel config applied", "device", c.cfg.DeviceID, "nodes", len(frame.Nodes))
 		case "heartbeat_ack":
+			if frame.OK {
+				c.metrics.ack(frame.MetricsAck)
+			}
 			c.log.Debug("heartbeat acknowledged", "device", c.cfg.DeviceID, "ts", frame.TS)
 		default:
 			c.log.Debug("control frame", "device", c.cfg.DeviceID, "type", frame.Type)
@@ -346,7 +393,8 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn *websocket.Conn, writeM
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			frame := model.AgentFrame{Type: "heartbeat", TS: c.now().Unix()}
+			latest, batch := c.metrics.snapshot()
+			frame := model.AgentFrame{Type: "heartbeat", TS: c.now().Unix(), Metrics: latest, MetricsBatch: batch}
 			if err := c.writeFrame(ctx, conn, writeMu, frame); err != nil {
 				c.log.Warn("heartbeat write failed", "device", c.cfg.DeviceID, "err", err)
 				closeConn()

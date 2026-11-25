@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
 import { bootstrapSession, session } from '@/stores/session'
 import { safeRedirect } from './redirect'
+import { setPageTitle } from '@/composables/useConsoleShell'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -46,6 +47,42 @@ const routes: RouteRecordRaw[] = [
         name: 'assets',
         component: () => import('@/views/AssetsView.vue'),
         meta: { title: '资产', requiresAuth: true },
+      },
+      {
+        path: 'ai',
+        name: 'ai',
+        component: () => import('@/views/AIView.vue'),
+        meta: { title: 'AI 助手', requiresAuth: true },
+      },
+      {
+        path: 'changes',
+        name: 'changes',
+        component: () => import('@/views/ChangesView.vue'),
+        meta: { title: '变更', requiresAuth: true },
+      },
+      {
+        path: 'datasources',
+        name: 'datasources',
+        component: () => import('@/views/DataSourcesView.vue'),
+        meta: { title: '数据源', requiresAuth: true },
+      },
+      {
+        path: 'credentials',
+        name: 'credentials',
+        component: () => import('@/views/CredentialsView.vue'),
+        meta: { title: '凭据', requiresAuth: true },
+      },
+      {
+        path: 'terminal/:id',
+        name: 'terminal',
+        component: () => import('@/views/TerminalView.vue'),
+        meta: { title: '终端', requiresAuth: true, parent: '/assets' },
+      },
+      {
+        path: 'notifications',
+        name: 'notifications',
+        component: () => import('@/views/NotificationsView.vue'),
+        meta: { title: '通知', requiresAuth: true },
       },
       {
         path: 'devices',
@@ -173,8 +210,7 @@ router.beforeEach(async (to) => {
 })
 
 router.afterEach((to) => {
-  const title = to.meta.title ? `${to.meta.title} · AIBOT 运维控制台` : 'AIBOT 运维控制台'
-  document.title = title
+  setPageTitle(to.meta.title)
 })
 
 export default router

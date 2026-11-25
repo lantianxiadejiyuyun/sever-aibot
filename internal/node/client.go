@@ -35,14 +35,16 @@ const (
 
 // Config configures the node runtime.
 type Config struct {
-	ControlURL   string
-	NodeID       string
-	NodeKey      string
-	StateDir     string
-	TunnelListen string
-	EntryHost    string
-	TLSCert      string
-	TLSKey       string
+	ControlURL       string
+	NodeID           string
+	NodeKey          string
+	StateDir         string
+	TunnelListen     string
+	TunnelTransport  string
+	RendezvousListen string
+	EntryHost        string
+	TLSCert          string
+	TLSKey           string
 	// TunnelHTTP serves the tunnel as a WebSocket at /tunnel, so a fronting
 	// reverse proxy (nginx) can terminate TLS for it.
 	TunnelHTTP bool
@@ -76,10 +78,16 @@ func New(cfg Config, log *slog.Logger) (*Runner, error) {
 		}
 		tlsConfig = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
 	}
-	return &Runner{
-		cfg: cfg, endpoint: endpoint, log: log,
-		rt: NewRuntime(cfg.NodeID, cfg.TunnelListen, cfg.EntryHost, tlsConfig, cfg.TunnelHTTP, log),
-	}, nil
+	if cfg.TunnelTransport != "" && cfg.TunnelTransport != "tcp" && cfg.TunnelTransport != "kcp" && cfg.TunnelTransport != "quic" {
+		return nil, errors.New("node: invalid tunnel transport")
+	}
+	if (cfg.TunnelTransport == "kcp" || cfg.TunnelTransport == "quic") && (tlsConfig == nil || cfg.TunnelHTTP) {
+		return nil, errors.New("node: KCP/QUIC require TLS and cannot use HTTP mode")
+	}
+	rt := NewRuntime(cfg.NodeID, cfg.TunnelListen, cfg.EntryHost, tlsConfig, cfg.TunnelHTTP, log)
+	rt.TunnelTransport = cfg.TunnelTransport
+	rt.RendezvousListen = cfg.RendezvousListen
+	return &Runner{cfg: cfg, endpoint: endpoint, log: log, rt: rt}, nil
 }
 
 // Run starts the tunnel listener and reconnects to the control plane until ctx
@@ -168,6 +176,7 @@ func (r *Runner) connectOnce(ctx context.Context) (acked bool, err error) {
 			case <-sessionCtx.Done():
 				return
 			case <-ticker.C:
+				r.rt.retryTraffic()
 				if err := write(model.AgentFrame{Type: "heartbeat", TS: time.Now().Unix()}); err != nil {
 					cancelSession()
 					return
@@ -205,10 +214,16 @@ func (r *Runner) connectOnce(ctx context.Context) (acked bool, err error) {
 				r.log.Warn("node hello rejected", "node", r.cfg.NodeID, "message", frame.Message)
 			}
 		case "config":
-			r.rt.ApplyConfig(frame.TunnelSecret, frame.Forwards)
+			r.rt.ApplyConfiguration(frame)
 			r.log.Info("node config applied", "node", r.cfg.NodeID, "forwards", len(frame.Forwards))
+		case "quota_ack":
+			r.rt.AckQuota(frame)
+		case "traffic_ack":
+			if frame.OK {
+				r.rt.AckTraffic(frame.Ref)
+			}
 		case "kick_device":
-			r.rt.KickDevice(frame.DeviceID)
+			r.rt.RevokeDevice(frame.DeviceID, frame.TS)
 		case "heartbeat_ack":
 			// Liveness only.
 		default:

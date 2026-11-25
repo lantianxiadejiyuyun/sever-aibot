@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"strconv"
@@ -190,6 +191,8 @@ func (m *tunnelManager) connectOnce(ctx context.Context, node model.TunnelNode) 
 		return fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 
 	_ = conn.SetDeadline(time.Now().Add(tunnelHeaderLimit))
 	if err := tunnel.WriteAuth(conn, tunnel.AuthRequest{DeviceID: m.deviceID, Ticket: node.Ticket}); err != nil {
@@ -197,6 +200,9 @@ func (m *tunnelManager) connectOnce(ctx context.Context, node model.TunnelNode) 
 	}
 	status, message, err := tunnel.ReadResult(conn)
 	if err != nil {
+		// UDP transports may close before the rejection frame is acknowledged.
+		// Refresh the ticket on an interrupted auth response as well.
+		m.requestConfig()
 		return fmt.Errorf("auth read: %w", err)
 	}
 	if status != tunnel.StatusOK {
@@ -228,18 +234,48 @@ func (m *tunnelManager) connectOnce(ctx context.Context, node model.TunnelNode) 
 
 	forwards := make(map[string]model.TunnelForward, len(node.Forwards))
 	for _, f := range node.Forwards {
-		forwards[f.ID] = f
+		if !f.Visitor {
+			forwards[f.ID] = f
+		}
 	}
+	directServices := m.startDirectProviders(session, node.Forwards)
+	defer func() {
+		for _, service := range directServices {
+			service.Close()
+		}
+	}()
+	listeners, err := m.startVisitors(session, node.Forwards)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, ln := range listeners {
+			_ = ln.Close()
+		}
+	}()
+	go func() {
+		<-session.CloseChan()
+		for _, ln := range listeners {
+			_ = ln.Close()
+		}
+	}()
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
 			return fmt.Errorf("accept stream: %w", err)
 		}
-		go m.handleStream(ctx, stream, forwards)
+		go m.handleStream(ctx, stream, forwards, directServices)
 	}
 }
 
 func (m *tunnelManager) dial(ctx context.Context, node model.TunnelNode) (net.Conn, error) {
+	transport, address, hostname, err := tunnel.UDPAddress(node.Addr)
+	if err != nil {
+		return nil, err
+	}
+	if transport != "" {
+		return tunnel.DialUDP(ctx, transport, address, &tls.Config{ServerName: hostname, MinVersion: tls.VersionTLS13})
+	}
 	if endpoint, ok := tunnelWSURL(node.Addr); ok {
 		return dialTunnelWS(ctx, endpoint)
 	}
@@ -251,10 +287,10 @@ func (m *tunnelManager) dial(ctx context.Context, node model.TunnelNode) (net.Co
 	if !node.TLS {
 		return dialer.DialContext(ctx, "tcp", addr)
 	}
-	return tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+	return (&tls.Dialer{NetDialer: dialer, Config: &tls.Config{
 		ServerName: host,
 		MinVersion: tls.VersionTLS12,
-	})
+	}}).DialContext(ctx, "tcp", addr)
 }
 
 // dialTunnelWS opens the tunnel through a reverse proxy. The proxy terminates
@@ -322,11 +358,32 @@ func nodeDialAddr(raw string, tlsEnabled bool) (addr, host string, err error) {
 	return net.JoinHostPort(bare, "443"), bare, nil
 }
 
-func (m *tunnelManager) handleStream(ctx context.Context, stream *yamux.Stream, forwards map[string]model.TunnelForward) {
+func (m *tunnelManager) handleStream(ctx context.Context, stream *yamux.Stream, forwards map[string]model.TunnelForward, directServices ...map[string]io.Closer) {
 	defer stream.Close()
 	_ = stream.SetDeadline(time.Now().Add(tunnelHeaderLimit))
 	forwardID, err := tunnel.ReadForwardID(stream)
 	if err != nil {
+		return
+	}
+	if strings.HasPrefix(forwardID, "@revoke-direct:") {
+		parts := strings.SplitN(forwardID, ":", 3)
+		if len(parts) != 3 {
+			return
+		}
+		revision, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return
+		}
+		f, ok := forwards[parts[2]]
+		if !ok || f.Revision != revision || f.Kind != "p2p" {
+			return
+		}
+		if len(directServices) > 0 {
+			if service := directServices[0][f.ID]; service != nil {
+				_ = service.Close()
+			}
+		}
+		_ = tunnel.WriteResult(stream, tunnel.StatusOK, "")
 		return
 	}
 	f, ok := forwards[forwardID]
@@ -339,7 +396,15 @@ func (m *tunnelManager) handleStream(ctx context.Context, stream *yamux.Stream, 
 		return
 	}
 	targetAddr := net.JoinHostPort(f.TargetIP, strconv.Itoa(f.TargetPort))
-	target, err := m.policy.DialContext(ctx, "tcp", targetAddr)
+	network := f.Protocol
+	if network == "" {
+		network = "tcp"
+	}
+	if network != "tcp" && network != "udp" {
+		_ = tunnel.WriteResult(stream, tunnel.StatusBadRequest, "unsupported target protocol")
+		return
+	}
+	target, err := m.policy.DialContext(ctx, network, targetAddr)
 	if err != nil {
 		m.log.Warn("tunnel target dial failed", "device", m.deviceID, "forward", f.ID, "target", targetAddr, "err", err)
 		_ = tunnel.WriteResult(stream, tunnel.StatusDialFailed, "target dial failed")
@@ -350,5 +415,102 @@ func (m *tunnelManager) handleStream(ctx context.Context, stream *yamux.Stream, 
 		return
 	}
 	_ = stream.SetDeadline(time.Time{})
-	tunnel.Pipe(stream, target)
+	if network == "udp" {
+		tunnel.PipeDatagrams(&tunnel.DatagramConn{Conn: stream}, target)
+	} else {
+		tunnel.Pipe(stream, target)
+	}
+}
+
+// startVisitors binds only loopback. Rules from different nodes compete for the
+// same OS listener namespace, preventing one node from bypassing port conflicts.
+func (m *tunnelManager) startVisitors(session *yamux.Session, forwards []model.TunnelForward) ([]net.Listener, error) {
+	listeners := []net.Listener{}
+	report := func(f model.TunnelForward, ok bool) {
+		stream, err := session.OpenStream()
+		if err != nil {
+			return
+		}
+		defer stream.Close()
+		_ = stream.SetDeadline(time.Now().Add(tunnelHeaderLimit))
+		kind := "@ready:"
+		if !ok {
+			kind = "@error:"
+		}
+		_ = tunnel.WriteForwardID(stream, kind+strconv.FormatInt(f.Revision, 10)+":"+f.ID)
+	}
+	for _, f := range forwards {
+		if !f.Visitor {
+			continue
+		}
+		if f.Kind != "tunnel" && f.Kind != "p2p" && f.Kind != "proxy" {
+			continue
+		}
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(f.RemotePort)))
+		if err != nil {
+			report(f, false)
+			for _, existing := range listeners {
+				existing.Close()
+			}
+			return nil, fmt.Errorf("visitor listen: %w", err)
+		}
+		listeners = append(listeners, ln)
+		report(f, true)
+		go func(ln net.Listener, f model.TunnelForward) {
+			for {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					defer conn.Close()
+					if f.Kind == "proxy" {
+						m.serveProxyVisitor(session, f, conn)
+						return
+					}
+					if f.Kind == "p2p" {
+						direct, err := m.dialDirect(session, f)
+						if err == nil {
+							defer direct.Close()
+							directReport(session, f, "@path", "direct")
+							m.pipeDirect(session, f, conn, direct)
+							return
+						}
+						if f.DisableRelay {
+							directReport(session, f, "@path", "unavailable")
+							return
+						}
+					}
+					if f.Kind == "p2p" {
+						stream, err := privateControl(session, f, "@relay")
+						if err == nil {
+							defer stream.Close()
+							var status byte
+							status, _, err = tunnel.ReadResult(stream)
+							if err == nil && status == tunnel.StatusOK {
+								_ = stream.SetDeadline(time.Time{})
+								directReport(session, f, "@path", "relay")
+								tunnel.Pipe(conn, stream)
+								return
+							}
+						}
+						directReport(session, f, "@path", "unavailable")
+						return
+					}
+					stream, err := session.OpenStream()
+					if err != nil {
+						return
+					}
+					defer stream.Close()
+					_ = stream.SetWriteDeadline(time.Now().Add(tunnelHeaderLimit))
+					if err = tunnel.WriteForwardID(stream, f.ID); err != nil {
+						return
+					}
+					_ = stream.SetWriteDeadline(time.Time{})
+					tunnel.Pipe(conn, stream)
+				}()
+			}
+		}(ln, f)
+	}
+	return listeners, nil
 }

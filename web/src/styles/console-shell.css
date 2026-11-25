@@ -1,0 +1,35 @@
+.layout-select { width: auto; min-width: 94px; font-size: 12px; padding: 7px 24px 7px 8px; }
+.site-heading { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+.site-announcement { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Explicit mobile mode also works on a wide desktop viewport. Auto mode
+   continues to use the existing responsive breakpoints. */
+html[data-layout='mobile'] .app-shell { display: block; min-height: 0; max-width: 480px; margin: auto; }
+html[data-layout='mobile'] .app-sidebar { display: none; }
+html[data-layout='mobile'] .mobile-menu-btn { display: inline-grid; }
+html[data-layout='mobile'] .topbar { min-height: 58px; padding: 10px 14px; background: var(--panel); }
+html[data-layout='mobile'] .health-badge { display: none; }
+html[data-layout='mobile'] .page-container { padding: 20px 16px calc(92px + env(safe-area-inset-bottom)); }
+html[data-layout='mobile'] .bottom-nav { position: fixed; left: 50%; right: auto; bottom: 0; transform: translateX(-50%); width: min(100%, 480px); z-index: 50; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); background: var(--panel); border-top: 1px solid var(--line); }
+html[data-layout='mobile'] .bottom-nav-link { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 50px; padding: 3px 2px; border-radius: 9px; color: var(--muted); font-size: 10.5px; text-align: center; }
+html[data-layout='mobile'] .bottom-nav-link.is-active { color: var(--primary); background: var(--primary-weak); }
+html[data-layout='mobile'] .page-head { align-items: flex-start; flex-wrap: wrap; }
+html[data-layout='mobile'] .page-title { font-size: 22px; }
+html[data-layout='mobile'] .page-actions { width: 100%; margin-left: 0; }
+html[data-layout='mobile'] :is(.form-grid, .kv-grid, .switch-grid, .theme-options, .overview-grid, .detail-grid) { grid-template-columns: minmax(0, 1fr); }
+html[data-layout='mobile'] .form-field.span-2 { grid-column: span 1; }
+html[data-layout='mobile'] .filter-bar :is(.input, .select, .search-box) { width: 100%; min-width: 0; }
+html[data-layout='mobile'] .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+html[data-layout='mobile'] .modal-panel { max-width: 480px; }
+html[data-layout='mobile'] .table-wrap.mobile-cards { overflow: visible; padding: 10px; }
+html[data-layout='mobile'] .mobile-cards :is(.data-table, tbody, tr, td) { display: block; width: 100%; }
+html[data-layout='mobile'] .mobile-cards thead { display: none; }
+html[data-layout='mobile'] .mobile-cards tr { margin-bottom: 10px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+html[data-layout='mobile'] .mobile-cards td { display: flex; justify-content: space-between; gap: 14px; padding: 8px 0; border-bottom: 1px dashed var(--line); text-align: right; }
+html[data-layout='mobile'] .mobile-cards td::before { content: attr(data-label); flex: none; color: var(--muted); font-size: 11.5px; text-align: left; }
+html[data-layout='mobile'] .mobile-cards td.cell-no-label { display: block; text-align: left; }
+html[data-layout='mobile'] .mobile-cards td.cell-no-label::before { display: none; }
+@media (max-width: 480px) {
+  .topbar-right { gap: 6px; }
+  .crumb > span { display: none; }
+}

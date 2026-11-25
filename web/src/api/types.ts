@@ -15,6 +15,7 @@ export interface ListResponse<T> {
 }
 
 export interface Device {
+  keyRetrievable?: boolean
   id: string
   name: string
   remark: string
@@ -37,6 +38,7 @@ export interface NodeFeatures {
 }
 
 export interface Node {
+  rendezvousAddress: string
   id: string
   name: string
   remark: string

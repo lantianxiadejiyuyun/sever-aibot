@@ -13,6 +13,7 @@ const props = withDefaults(
     secret: string
     subject?: string
     confirmText?: string
+    retrievable?: boolean
   }>(),
   {
     title: '一次性密钥',
@@ -29,7 +30,9 @@ const copyError = ref('')
 
 const warning = computed(() => {
   const target = props.subject ? `设备「${props.subject}」的` : ''
-  return `${target}密钥只显示这一次，关闭后无法再次查看。请立即保存到安全的位置。`
+  return props.retrievable
+    ? `${target}密钥已加密保存，之后可在设备详情中验证身份后再次查看。请勿向他人泄露。`
+    : `${target}密钥只显示这一次，关闭后无法再次查看。请立即保存到安全的位置。`
 })
 
 async function copy(): Promise<void> {
@@ -58,7 +61,7 @@ function close(): void {
     <div class="stack">
       <div class="notice notice-warning" role="alert">
         <AlertTriangle :size="17" aria-hidden="true" />
-        <div><strong>仅显示一次。</strong>{{ warning }}</div>
+        <div><strong>{{ retrievable ? '敏感设备密钥。' : '仅显示一次。' }}</strong>{{ warning }}</div>
       </div>
 
       <div class="secret-key">

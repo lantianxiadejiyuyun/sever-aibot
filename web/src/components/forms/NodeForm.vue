@@ -31,6 +31,7 @@ function blank(): NodeFormState {
     remark: '',
     tags: '',
     addr: '',
+    rendezvousAddress: '',
     protocol: 'tcp',
     httpPort: 0,
     replaceAddress: '',
@@ -62,6 +63,7 @@ function fill(node: Node | null): void {
     next.remark = node.remark
     next.tags = node.tags
     next.addr = node.addr
+    next.rendezvousAddress = node.rendezvousAddress || ''
     next.protocol = node.protocol || 'tcp'
     next.httpPort = node.httpPort
     next.replaceAddress = node.replaceAddress
@@ -129,6 +131,7 @@ function submit(): void {
     remark: form.remark.trim(),
     tags: form.tags.trim(),
     addr: form.addr.trim(),
+    rendezvousAddress: form.rendezvousAddress.trim(),
     protocol: form.protocol,
     httpPort,
     replaceAddress: form.replaceAddress.trim(),
@@ -166,7 +169,10 @@ function submit(): void {
         <input id="node-addr" v-model="form.addr" class="input" type="text" maxlength="200" autocomplete="off" placeholder="node.example.com:7000" />
       </FormField>
 
-      <FormField label="连接协议" for-id="node-protocol">
+      <FormField label="P2P UDP 会合地址" for-id="node-rendezvous" hint="可选，填写节点公网 host:port；节点须启用独立 UDP 会合监听并放行该端口。留空仅尝试 TCP 直连。">
+        <input id="node-rendezvous" v-model="form.rendezvousAddress" class="input" maxlength="200" placeholder="node.example.com:7001" />
+      </FormField>
+      <FormField label="连接协议" for-id="node-protocol" hint="KCP/QUIC 使用独立 UDP 端口且必须配置可信 TLS 证书，不能经过 HTTP 反向代理。">
         <select id="node-protocol" v-model="form.protocol" class="select">
           <option value="tcp">TCP</option>
           <option value="kcp">KCP</option>
@@ -208,11 +214,11 @@ function submit(): void {
         <input id="node-limit-gb" v-model.number="form.limitTotalGb" class="input" type="number" min="0" step="0.1" inputmode="decimal" />
       </FormField>
 
-      <FormField label="计量方式" for-id="node-limit-kind" hint="例如 monthly、total，由节点侧解释。">
-        <input id="node-limit-kind" v-model="form.limitKind" class="input" type="text" maxlength="40" autocomplete="off" placeholder="monthly" />
+      <FormField label="计量方式" for-id="node-limit-kind" hint="额度在写入前持久预留，失败写入不退还；控制面不可用时暂停受限流量。">
+        <select id="node-limit-kind" v-model="form.limitKind" class="select"><option value="">累计</option><option value="total">累计</option><option value="monthly">按月（UTC）</option></select>
       </FormField>
 
-      <FormField label="重置日" for-id="node-limit-reset" hint="每月重置日期，0 表示不重置。">
+      <FormField label="重置日" for-id="node-limit-reset" hint="仅按月生效，0 表示每月 1 日；超过当月天数取月末。启用额度或限速后 P2P 使用中继。">
         <input id="node-limit-reset" v-model.number="form.limitResetDay" class="input" type="number" min="0" max="31" inputmode="numeric" />
       </FormField>
 

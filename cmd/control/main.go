@@ -63,6 +63,9 @@ func run(log *slog.Logger) error {
 
 	h := hub.New(st, log)
 	srv := api.New(cfg, st, h, log)
+	defer srv.CloseAccess()
+	defer srv.StopOperations()
+	defer srv.CloseChanges()
 	httpServer := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           srv.Routes(),
@@ -74,6 +77,26 @@ func run(log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	srv.StartOperations(ctx)
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			if err := st.CleanupAudit(ctx); err != nil {
+				log.Warn("cleanup audit", "err", err)
+			}
+			if count, err := st.CleanupRecordings(ctx); err != nil {
+				log.Warn("cleanup recordings", "err", err)
+			} else if count > 0 {
+				log.Info("expired recordings removed", "sessions", count)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)

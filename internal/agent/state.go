@@ -17,6 +17,8 @@ type State struct {
 	lastFrameAt     time.Time
 	reconnects      int
 	lastError       string
+	nextRetryAt     time.Time
+	retryAttempt    int
 }
 
 // Snapshot is a point-in-time copy of State.
@@ -27,6 +29,8 @@ type Snapshot struct {
 	LastFrameAt     time.Time `json:"lastFrameAt,omitempty"`
 	Reconnects      int       `json:"reconnects"`
 	LastError       string    `json:"lastError,omitempty"`
+	NextRetryAt     time.Time `json:"nextRetryAt,omitempty"`
+	RetryAttempt    int       `json:"retryAttempt"`
 }
 
 func (s *State) setConnected(now time.Time) {
@@ -49,6 +53,9 @@ func (s *State) markHelloAck(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastHelloAckAt = now
+	s.lastError = ""
+	s.retryAttempt = 0
+	s.nextRetryAt = time.Time{}
 }
 
 func (s *State) markFrame(now time.Time) {
@@ -57,10 +64,26 @@ func (s *State) markFrame(now time.Time) {
 	s.lastFrameAt = now
 }
 
-func (s *State) markReconnect() {
+func (s *State) markReconnect(attempt int, next time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reconnects++
+	s.retryAttempt = attempt
+	s.nextRetryAt = next
+}
+
+func (s *State) beginConnect() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextRetryAt = time.Time{}
+}
+
+func (s *State) setStopped() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.connected = false
+	s.nextRetryAt = time.Time{}
+	s.retryAttempt = 0
 }
 
 func (s *State) snapshot() Snapshot {
@@ -73,6 +96,8 @@ func (s *State) snapshot() Snapshot {
 		LastFrameAt:     s.lastFrameAt,
 		Reconnects:      s.reconnects,
 		LastError:       s.lastError,
+		NextRetryAt:     s.nextRetryAt,
+		RetryAttempt:    s.retryAttempt,
 	}
 }
 

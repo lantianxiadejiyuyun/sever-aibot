@@ -1,9 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"server-aibot/internal/tunnel"
 	"strconv"
 	"strings"
 
@@ -74,7 +77,11 @@ func (s *Server) createDevice(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_argument", "设备名称不能为空")
 		return
 	}
-	device, key, err := s.store.CreateDevice(r.Context(), req.Name, req.Remark, req.Tags)
+	v, ok := s.newVault(w)
+	if !ok {
+		return
+	}
+	device, key, err := s.store.CreateDevice(r.Context(), req.Name, req.Remark, req.Tags, v)
 	if err != nil {
 		s.internal(w, "创建设备失败", err)
 		return
@@ -110,7 +117,17 @@ func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "device_online", "设备在线，请先停止 Agent 再删除")
 		return
 	}
-	forwards, _ := s.store.ListForwards(r.Context(), id, "", "")
+	all, err := s.store.ListForwards(r.Context(), "", "", "")
+	if err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	forwards := []model.Forward{}
+	for _, f := range all {
+		if f.DeviceID == id || f.ClientID == id {
+			forwards = append(forwards, f)
+		}
+	}
 	for _, f := range forwards {
 		if activeForwardState(f.State) {
 			_ = s.store.SetForwardState(r.Context(), f.ID, forwardError, "设备已删除")
@@ -120,29 +137,52 @@ func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 		s.storeErr(w, err)
 		return
 	}
-	s.nodes.Broadcast(model.AgentFrame{Type: "kick_device", DeviceID: id})
+	stamp, revokeErr := s.store.RevokeDeviceTunnels(r.Context(), id)
+	if revokeErr != nil {
+		s.internal(w, "撤销设备隧道失败", revokeErr)
+		return
+	}
+	s.nodes.Broadcast(model.AgentFrame{Type: "kick_device", DeviceID: id, TS: stamp})
 	seen := map[string]bool{}
 	for _, f := range forwards {
+		s.pushAgentConfig(r.Context(), f.DeviceID)
+		s.pushAgentConfig(r.Context(), f.ClientID)
 		if f.NodeID != "" && !seen[f.NodeID] {
 			seen[f.NodeID] = true
 			s.pushNodeConfig(r.Context(), f.NodeID)
 		}
 	}
+	s.DisconnectAccessDevice(id)
 	s.audit(r, "device.delete", id, nil)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) rotateDeviceKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	key, err := s.store.RotateDeviceKey(r.Context(), id)
+	v, ok := s.newVault(w)
+	if !ok {
+		return
+	}
+	key, err := s.store.RotateDeviceKey(r.Context(), id, v)
 	if err != nil {
 		s.storeErr(w, err)
 		return
 	}
 	s.hub.Disconnect(id, "device key rotated")
+	s.DisconnectAccessDevice(id)
 	// Node sessions were authenticated with tickets for the old key. Close
 	// them; a reconnect needs a fresh control-plane config.
-	s.nodes.Broadcast(model.AgentFrame{Type: "kick_device", DeviceID: id})
+	stamp, revokeErr := s.store.RevokeDeviceTunnels(r.Context(), id)
+	if revokeErr != nil {
+		s.internal(w, "撤销设备隧道失败", revokeErr)
+		return
+	}
+	s.nodes.Broadcast(model.AgentFrame{Type: "kick_device", DeviceID: id, TS: stamp})
+	allNodes, _ := s.store.ListNodes(r.Context())
+	for _, n := range allNodes {
+		s.pushNodeConfig(r.Context(), n.ID)
+		s.pushNodeForwardsToAgents(r.Context(), n.ID)
+	}
 	s.audit(r, "device.rotate-key", id, nil)
 	writeJSON(w, http.StatusOK, map[string]string{"deviceId": id, "deviceKey": key})
 }
@@ -150,6 +190,7 @@ func (s *Server) rotateDeviceKey(w http.ResponseWriter, r *http.Request) {
 // ---------- nodes ----------
 
 type nodeRequest struct {
+	RendezvousAddress *string             `json:"rendezvousAddress"`
 	Name              *string             `json:"name"`
 	Remark            *string             `json:"remark"`
 	Tags              *string             `json:"tags"`
@@ -204,8 +245,20 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 	n := model.Node{Name: strings.TrimSpace(*req.Name), Protocol: "tcp", Status: "offline",
 		Features: model.NodeFeatures{Web: true}}
 	applyNodePatch(&n, req)
+	if n.LimiterMbps < 0 || n.Concurrency < 0 || n.Connections < 0 || n.MaxPoolCount < 0 {
+		writeErr(w, 400, "invalid_argument", "节点运行限制不能为负数")
+		return
+	}
 	if !validProtocol(n.Protocol) {
-		writeErr(w, http.StatusBadRequest, "invalid_argument", "连接协议必须是 tcp/kcp/quic/ws/wss")
+		writeErr(w, http.StatusBadRequest, "invalid_argument", "接入协议必须为 tcp/ws/wss/kcp/quic")
+		return
+	}
+	if err := validateNodeQuota(n); err != nil {
+		writeErr(w, 400, "invalid_argument", err.Error())
+		return
+	}
+	if err := validateNodeTransport(n); err != nil {
+		writeErr(w, 400, "invalid_argument", err.Error())
 		return
 	}
 	created, key, err := s.store.CreateNode(r.Context(), n)
@@ -248,8 +301,20 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_argument", "节点名称不能为空")
 		return
 	}
+	if existing.LimiterMbps < 0 || existing.Concurrency < 0 || existing.Connections < 0 || existing.MaxPoolCount < 0 {
+		writeErr(w, 400, "invalid_argument", "节点运行限制不能为负数")
+		return
+	}
 	if !validProtocol(existing.Protocol) {
-		writeErr(w, http.StatusBadRequest, "invalid_argument", "连接协议必须是 tcp/kcp/quic/ws/wss")
+		writeErr(w, http.StatusBadRequest, "invalid_argument", "接入协议必须为 tcp/ws/wss/kcp/quic")
+		return
+	}
+	if err := validateNodeQuota(*existing); err != nil {
+		writeErr(w, 400, "invalid_argument", err.Error())
+		return
+	}
+	if err := validateNodeTransport(*existing); err != nil {
+		writeErr(w, 400, "invalid_argument", err.Error())
 		return
 	}
 	updated, err := s.store.UpdateNode(r.Context(), *existing)
@@ -257,6 +322,7 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		s.storeErr(w, err)
 		return
 	}
+	s.pushNodeConfig(r.Context(), id)
 	// An address change affects the tunnel dial target cached by agents.
 	s.pushNodeForwardsToAgents(r.Context(), id)
 	s.audit(r, "node.update", id, nil)
@@ -276,6 +342,7 @@ func (s *Server) deleteNode(w http.ResponseWriter, r *http.Request) {
 		}
 		if f.DeviceID != "" {
 			s.pushAgentConfig(r.Context(), f.DeviceID)
+			s.pushAgentConfig(r.Context(), f.ClientID)
 		}
 	}
 	if err := s.store.DeleteNode(r.Context(), id); err != nil {
@@ -301,6 +368,7 @@ func applyNodePatch(n *model.Node, req nodeRequest) {
 	setString(&n.Remark, req.Remark)
 	setString(&n.Tags, req.Tags)
 	setString(&n.Addr, req.Addr)
+	setString(&n.RendezvousAddress, req.RendezvousAddress)
 	setString(&n.Protocol, req.Protocol)
 	setInt(&n.HTTPPort, req.HTTPPort)
 	setString(&n.ReplaceAddress, req.ReplaceAddress)
@@ -331,7 +399,7 @@ func applyNodePatch(n *model.Node, req nodeRequest) {
 
 func validProtocol(p string) bool {
 	switch p {
-	case "tcp", "kcp", "quic", "ws", "wss":
+	case "tcp", "ws", "wss", "kcp", "quic":
 		return true
 	}
 	return false
@@ -403,13 +471,22 @@ func (s *Server) updateForward(w http.ResponseWriter, r *http.Request) {
 		s.storeErr(w, err)
 		return
 	}
+	if existing.State == "stopping" {
+		writeErr(w, 409, "revoke_pending", "等待节点确认停止后再编辑")
+		return
+	}
 	oldNode, oldDevice := existing.NodeID, existing.DeviceID
+	oldClient := existing.ClientID
 	wasActive := activeForwardState(existing.State)
 	var req forwardRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	applyForwardPatch(existing, req)
+	if existing.State != "saved" && existing.State != "stopped" && (existing.NodeID != oldNode || existing.DeviceID != oldDevice || existing.ClientID != oldClient) {
+		writeErr(w, 409, "stop_required", "更换节点或设备前必须停止并确认撤销")
+		return
+	}
 	if err := s.validateForward(r, existing); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_argument", err.Error())
 		return
@@ -420,7 +497,7 @@ func (s *Server) updateForward(w http.ResponseWriter, r *http.Request) {
 		existing.State = "saved"
 	}
 	existing.LastError = ""
-	updated, err := s.store.UpdateForward(r.Context(), *existing)
+	updated, err := s.store.UpdateForwardRuntime(r.Context(), *existing)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "conflict") {
 			writeErr(w, http.StatusConflict, "port_conflict", "该节点端口已被其他转发占用")
@@ -438,6 +515,7 @@ func (s *Server) updateForward(w http.ResponseWriter, r *http.Request) {
 		}
 		s.pushNodeConfig(r.Context(), updated.NodeID)
 		s.pushAgentConfig(r.Context(), updated.DeviceID)
+		s.pushAgentConfig(r.Context(), updated.ClientID)
 	}
 	s.audit(r, "forward.update", id, nil)
 	writeJSON(w, http.StatusOK, updated)
@@ -450,7 +528,11 @@ func (s *Server) deleteForward(w http.ResponseWriter, r *http.Request) {
 		s.storeErr(w, err)
 		return
 	}
-	if err := s.store.DeleteForward(r.Context(), id); err != nil {
+	if f.State != "saved" && f.State != "stopped" {
+		writeErr(w, 409, "stop_required", "请先停止转发并等待节点撤销确认后删除")
+		return
+	}
+	if err := s.store.DeleteInactiveForward(r.Context(), id, f.Revision); err != nil {
 		s.storeErr(w, err)
 		return
 	}
@@ -459,6 +541,7 @@ func (s *Server) deleteForward(w http.ResponseWriter, r *http.Request) {
 	if activeForwardState(f.State) {
 		s.pushNodeConfig(r.Context(), f.NodeID)
 		s.pushAgentConfig(r.Context(), f.DeviceID)
+		s.pushAgentConfig(r.Context(), f.ClientID)
 	}
 	s.audit(r, "forward.delete", id, nil)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -505,6 +588,28 @@ func applyForwardPatch(f *model.Forward, req forwardRequest) {
 }
 
 func (s *Server) validateForward(r *http.Request, f *model.Forward) error {
+	if f.Options != "" {
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(f.Options), &object); err != nil || object == nil {
+			return errors.New("options 必须为 JSON 对象")
+		}
+		if raw, ok := object["protocol"]; ok {
+			var protocol string
+			if err := json.Unmarshal(raw, &protocol); err != nil || protocol == "" {
+				return errors.New("protocol 必须为 tcp 或 udp 字符串")
+			}
+		}
+		if raw, ok := object["relay"]; ok && string(raw) != "true" && string(raw) != "false" {
+			return errors.New("relay 必须为布尔值")
+		}
+		var direct directForwardOptions
+		if err := json.Unmarshal([]byte(f.Options), &direct); err != nil {
+			return errors.New("直连选项必须为字符串")
+		}
+	}
+	if protocol := forwardProtocol(f.Options); protocol != "tcp" && protocol != "udp" {
+		return errors.New("数据平面仅支持 TCP 或 UDP")
+	}
 	if f.Name == "" {
 		return errors.New("转发名称不能为空")
 	}
@@ -528,6 +633,53 @@ func (s *Server) validateForward(r *http.Request, f *model.Forward) error {
 			return errors.New("设备不存在")
 		}
 	}
+	if f.Kind != "tunnel" && f.Kind != "p2p" && f.Kind != "proxy" {
+		f.ClientID = ""
+	}
+	if f.Kind == "p2p" {
+		direct := directOptions(f.Options)
+		if direct.DirectAddress != "" {
+			if err := tunnel.ValidateDirectAddress(direct.DirectAddress, true); err != nil {
+				return err
+			}
+		}
+		if direct.DirectListen != "" {
+			host, port, err := net.SplitHostPort(direct.DirectListen)
+			if err != nil {
+				return errors.New("directListen 必须为 IP:port")
+			}
+			if host != "" && net.ParseIP(host) == nil {
+				return errors.New("directListen 必须使用 IP")
+			}
+			n, err := strconv.Atoi(port)
+			if err != nil || n < 0 || n > 65535 {
+				return errors.New("directListen 端口无效")
+			}
+		}
+	}
+	if f.Kind == "tunnel" || f.Kind == "p2p" || f.Kind == "proxy" {
+		if f.DeviceID == "" || f.ClientID == "" || f.DeviceID == f.ClientID {
+			return errors.New("私有访问必须选择不同的服务设备和访问设备")
+		}
+		if _, err := s.store.GetDevice(r.Context(), f.ClientID); err != nil {
+			return errors.New("访问设备不存在")
+		}
+		if f.TargetIP == "" || f.TargetPort < 1 || f.RemotePort < 1 {
+			return errors.New("请填写目标地址、目标端口和访问设备本机端口")
+		}
+		if forwardProtocol(f.Options) != "tcp" {
+			return errors.New("私有访问当前仅支持 TCP")
+		}
+		rules, err := s.store.ListForwards(r.Context(), "", "", "")
+		if err != nil {
+			return err
+		}
+		for _, other := range rules {
+			if other.ID != f.ID && other.ClientID == f.ClientID && other.RemotePort == f.RemotePort && (other.Kind == "tunnel" || other.Kind == "p2p" || other.Kind == "proxy") {
+				return errors.New("该访问设备本机端口已被其他私有访问占用")
+			}
+		}
+	}
 	if f.TargetPort < 0 || f.TargetPort > 65535 {
 		return errors.New("目标端口必须在 1-65535 之间")
 	}
@@ -535,8 +687,46 @@ func (s *Server) validateForward(r *http.Request, f *model.Forward) error {
 		return errors.New("入口端口必须在 1-65535 之间")
 	}
 	if f.Kind == "host" {
-		if f.Domain == "" {
-			return errors.New("域名条目必须填写域名")
+		f.Domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(f.Domain), "."))
+		if !validForwardDomain(f.Domain, node.AllowWildcard) {
+			return errors.New("请输入有效域名；通配符需节点允许")
+		}
+		if node.Domain != "" {
+			suffix := strings.ToLower(strings.TrimSuffix(node.Domain, "."))
+			base := strings.TrimPrefix(f.Domain, "*.")
+			if base != suffix && !strings.HasSuffix(base, "."+suffix) {
+				return errors.New("域名不属于节点配置的域名后缀")
+			}
+		}
+		for _, prefix := range strings.Split(node.DenyDomainPrefix, ",") {
+			prefix = strings.TrimSpace(prefix)
+			if prefix != "" && strings.HasPrefix(f.Domain, prefix) {
+				return errors.New("域名前缀被节点策略禁止")
+			}
+		}
+		if f.DeviceID == "" || f.TargetIP == "" || f.TargetPort == 0 {
+			return errors.New("域名转发必须选择设备、目标地址和端口")
+		}
+		if node.HTTPPort < 1 || node.HTTPPort > 65535 {
+			return errors.New("节点必须配置有效 HTTP 入口端口")
+		}
+		if forwardProtocol(f.Options) != "tcp" {
+			return errors.New("HTTP 域名转发必须使用 TCP 目标")
+		}
+		all, err := s.store.ListForwards(r.Context(), "", f.NodeID, "")
+		if err != nil {
+			return err
+		}
+		for _, other := range all {
+			if other.ID == f.ID {
+				continue
+			}
+			if other.Kind == "host" && strings.EqualFold(other.Domain, f.Domain) {
+				return errors.New("节点已存在相同域名")
+			}
+			if other.Kind == "port" && other.RemotePort == node.HTTPPort && forwardProtocol(other.Options) == "tcp" {
+				return errors.New("HTTP 入口端口已被端口转发占用")
+			}
 		}
 	} else if f.Kind == "port" {
 		if f.DeviceID == "" {
@@ -547,6 +737,9 @@ func (s *Server) validateForward(r *http.Request, f *model.Forward) error {
 		}
 		if f.TargetIP == "" || f.TargetPort == 0 {
 			return errors.New("请填写目标地址和端口")
+		}
+		if f.RemotePort == node.HTTPPort && forwardProtocol(f.Options) == "tcp" {
+			return errors.New("入口端口被节点 HTTP 域名服务保留")
 		}
 		if node.ForwardPorts != "" && !portAllowed(node.ForwardPorts, f.RemotePort) {
 			return fmt.Errorf("入口端口不在节点允许的端口段 %s 内", node.ForwardPorts)
@@ -596,6 +789,10 @@ func portAllowed(spec string, port int) bool {
 // ---------- shared errors ----------
 
 func (s *Server) storeErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrForwardConflict) {
+		writeErr(w, 409, "forward_conflict", "转发已被修改或尚未确认停止，请刷新后重试")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "not_found", "记录不存在")
 		return
@@ -627,4 +824,27 @@ func queryInt(r *http.Request, key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func validForwardDomain(domain string, wildcard bool) bool {
+	if strings.HasPrefix(domain, "*.") {
+		if !wildcard {
+			return false
+		}
+		domain = domain[2:]
+	}
+	if len(domain) > 253 || !strings.Contains(domain, ".") {
+		return false
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }

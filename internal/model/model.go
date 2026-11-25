@@ -4,8 +4,7 @@ package model
 
 import "time"
 
-// Device is a machine running cmd/agent. The control plane stores only a hash
-// of the device key; the key itself is returned exactly once at creation.
+// Device is a machine running cmd/agent. Key material is never part of this view.
 type Device struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -17,10 +16,11 @@ type Device struct {
 	Arch    string `json:"arch"`
 	// KeyPrefix is kept for support diagnostics but never returned to clients:
 	// even a prefix narrows a brute-force search.
-	KeyPrefix  string     `json:"-"`
-	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	UpdatedAt  time.Time  `json:"updatedAt"`
+	KeyRetrievable bool       `json:"keyRetrievable"`
+	KeyPrefix      string     `json:"-"`
+	LastSeenAt     *time.Time `json:"lastSeenAt,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
 }
 
 // NodeFeatures mirrors the capability switches exposed by gostc-open nodes.
@@ -34,6 +34,7 @@ type NodeFeatures struct {
 
 // Node is a public relay endpoint (frps / gost node).
 type Node struct {
+	RendezvousAddress string       `json:"rendezvousAddress"`
 	ID                string       `json:"id"`
 	Name              string       `json:"name"`
 	Remark            string       `json:"remark"`
@@ -101,19 +102,64 @@ type TunnelNode struct {
 // TunnelForward is one applied forward. On the node side DeviceID says which
 // agent owns it; on the agent side TargetIP/TargetPort say where to dial.
 type TunnelForward struct {
-	ID         string `json:"id"`
-	DeviceID   string `json:"deviceId,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	RemotePort int    `json:"remotePort,omitempty"`
-	TargetIP   string `json:"targetIp,omitempty"`
-	TargetPort int    `json:"targetPort,omitempty"`
+	DirectDisabled    bool   `json:"directDisabled,omitempty"`
+	RendezvousAddress string `json:"rendezvousAddress,omitempty"`
+	P2PKey            string `json:"p2pKey,omitempty"`
+	DirectAddress     string `json:"directAddress,omitempty"`
+	DirectListen      string `json:"directListen,omitempty"`
+	DisableRelay      bool   `json:"disableRelay,omitempty"`
+	ClientID          string `json:"clientId,omitempty"`
+	Visitor           bool   `json:"visitor,omitempty"`
+	Revision          int64  `json:"revision"`
+	Disabled          bool   `json:"disabled,omitempty"`
+	Protocol          string `json:"protocol,omitempty"`
+	Domain            string `json:"domain,omitempty"`
+	ID                string `json:"id"`
+	DeviceID          string `json:"deviceId,omitempty"`
+	Name              string `json:"name,omitempty"`
+	Kind              string `json:"kind,omitempty"`
+	RemotePort        int    `json:"remotePort,omitempty"`
+	TargetIP          string `json:"targetIp,omitempty"`
+	TargetPort        int    `json:"targetPort,omitempty"`
+}
+
+// Metrics is a host sample. Nil values encode as null (unavailable), never zero.
+// CPUPercent is 0..100 across all CPUs; memory and cumulative I/O use bytes.
+// Network counters exclude loopback. Disk counters are per block device (including
+// partitions): consumers must not sum parents and children. Status keys are cpu,
+// memory, load, network, disk and diskCapacity; values are ok, warming_up,
+// unavailable, unsupported. RootDisk fields describe / on Linux and the system
+// drive on Windows; used = total - free, percentage = used / total * 100.
+// CollectedAt is the agent clock, validated for batch queries; ReceivedAt in
+// storage separately records the trusted server receipt time.
+// SampleID is a random 128-bit hex ID retained across delivery retries.
+type Metrics struct {
+	SampleID            string            `json:"sampleId,omitempty"`
+	RootDiskTotal       *uint64           `json:"rootDiskTotal"`
+	RootDiskUsed        *uint64           `json:"rootDiskUsed"`
+	RootDiskUsedPercent *float64          `json:"rootDiskUsedPercent"`
+	CollectedAt         time.Time         `json:"collectedAt"`
+	CPUPercent          *float64          `json:"cpuPercent"`
+	MemUsed             *uint64           `json:"memUsed"`
+	MemTotal            *uint64           `json:"memTotal"`
+	Load1               *float64          `json:"load1"`
+	Load5               *float64          `json:"load5"`
+	Load15              *float64          `json:"load15"`
+	NetworkRXBytes      map[string]uint64 `json:"networkRxBytes"`
+	NetworkTXBytes      map[string]uint64 `json:"networkTxBytes"`
+	DiskReadBytes       map[string]uint64 `json:"diskReadBytes"`
+	DiskWriteBytes      map[string]uint64 `json:"diskWriteBytes"`
+	Status              map[string]string `json:"status"`
 }
 
 // AgentFrame is the JSON control-frame envelope used on /agent/ws and
 // /node/ws. Data-plane bytes never travel on these sockets.
 type AgentFrame struct {
-	Type string `json:"type"`
+	Revision      int64              `json:"revision,omitempty"`
+	UploadBytes   int64              `json:"uploadBytes,omitempty"`
+	DownloadBytes int64              `json:"downloadBytes,omitempty"`
+	NodePolicy    *NodeRuntimePolicy `json:"nodePolicy,omitempty"`
+	Type          string             `json:"type"`
 	// hello
 	Version string `json:"version,omitempty"`
 	OS      string `json:"os,omitempty"`
@@ -121,10 +167,13 @@ type AgentFrame struct {
 	// hello for nodes: the tunnel listener uses TLS when true
 	TLS bool `json:"tls,omitempty"`
 	// heartbeat
-	TS       int64   `json:"ts,omitempty"`
-	Load1    float64 `json:"load1,omitempty"`
-	MemUsed  uint64  `json:"memUsed,omitempty"`
-	MemTotal uint64  `json:"memTotal,omitempty"`
+	MetricsBatch []Metrics `json:"metricsBatch,omitempty"`
+	MetricsAck   []string  `json:"metricsAck,omitempty"`
+	Metrics      *Metrics  `json:"metrics,omitempty"`
+	TS           int64     `json:"ts,omitempty"`
+	Load1        float64   `json:"load1,omitempty"`
+	MemUsed      uint64    `json:"memUsed,omitempty"`
+	MemTotal     uint64    `json:"memTotal,omitempty"`
 	// config push (agent receives Nodes, node receives TunnelSecret+Forwards)
 	TunnelSecret string          `json:"tunnelSecret,omitempty"`
 	Nodes        []TunnelNode    `json:"nodes,omitempty"`

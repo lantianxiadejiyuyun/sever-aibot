@@ -80,6 +80,7 @@ func (s *Server) Routes() http.Handler {
 
 	r.Get("/healthz", s.health)
 	r.Handle("/agent/ws", http.HandlerFunc(s.agentWS))
+	r.HandleFunc("/agent/access", s.AgentAccessWS)
 	r.Handle("/node/ws", http.HandlerFunc(s.nodeWS))
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -101,6 +102,8 @@ func (s *Server) Routes() http.Handler {
 					r.With(s.requireCSRF).Patch("/", s.updateDevice)
 					r.With(s.requireCSRF).Delete("/", s.deleteDevice)
 					r.With(s.requireCSRF).Post("/rotate-key", s.rotateDeviceKey)
+					r.With(s.requireCSRF).Post("/reveal-key", s.revealDeviceKey)
+					r.With(s.requireCSRF).Post("/retain-key", s.retainDeviceKey)
 				})
 			})
 
@@ -128,12 +131,16 @@ func (s *Server) Routes() http.Handler {
 
 			s.MountCredentials(r)
 			s.MountAssets(r)
+			s.MountSettings(r)
 
-			// Milestone stubs return a clear 501 instead of pretending success.
-			r.Get("/metrics/overview", s.notImplemented("metrics"))
-			r.Get("/inspection-runs", s.notImplemented("inspection"))
-			r.Get("/notify/channels", s.notImplemented("notify"))
-			r.Get("/ai/providers", s.notImplemented("ai"))
+			s.MountMetrics(r)
+			s.MountAccess(r)
+			s.MountOperations(r)
+			s.MountForwardRuntime(r)
+			s.MountAI(r)
+			s.MountDataSources(r)
+			s.MountAccount(r)
+			s.MountChanges(r)
 		})
 	})
 

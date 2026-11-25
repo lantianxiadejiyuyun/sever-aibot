@@ -208,7 +208,19 @@ func (h *Hub) handleFrame(ctx context.Context, c *Conn, data []byte) {
 		if err := h.store.TouchDevice(ctx, c.DeviceID); err != nil {
 			h.log.Warn("touch device", "device", c.DeviceID, "err", err)
 		}
-		_ = c.Send(model.AgentFrame{Type: "heartbeat_ack", TS: time.Now().Unix(), OK: true})
+		var metricAck []string
+		if len(frame.MetricsBatch) > 0 {
+			var err error
+			metricAck, err = h.store.SaveDeviceMetricsBatch(ctx, c.DeviceID, frame.MetricsBatch)
+			if err != nil {
+				h.log.Warn("save device metric batch", "device", c.DeviceID, "err", err)
+			}
+		} else if frame.Metrics != nil && frame.Metrics.SampleID == "" {
+			if _, err := h.store.SaveDeviceMetrics(ctx, c.DeviceID, *frame.Metrics); err != nil {
+				h.log.Warn("save device metrics", "device", c.DeviceID, "err", err)
+			}
+		}
+		_ = c.Send(model.AgentFrame{Type: "heartbeat_ack", TS: time.Now().Unix(), OK: true, MetricsAck: metricAck})
 	case "config_request":
 		h.mu.RLock()
 		fn := h.onConfig

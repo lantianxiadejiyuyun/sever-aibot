@@ -3,9 +3,12 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"log/slog"
 	"net/http"
@@ -50,7 +53,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	h := hub.New(st, log)
 	s := New(config.Control{MasterKey: key, AdminUser: "admin", AdminPassword: password, SessionTTL: 12}, st, h, log)
 	ts := httptest.NewServer(s.Routes())
-	t.Cleanup(ts.Close)
+	t.Cleanup(func() { ts.Close(); s.CloseChanges(); s.StopOperations(); s.CloseAccess() })
 	jar, _ := cookiejar.New(nil)
 	env := &testEnv{srv: ts, store: st, client: &http.Client{Jar: jar, Timeout: 15 * time.Second}, password: password}
 	env.login(t, password)
@@ -221,6 +224,15 @@ func TestForwardValidation(t *testing.T) {
 		"name": "office-rdp", "kind": "port", "nodeId": nodeID, "deviceId": deviceCreated.Device.ID,
 		"targetIp": "192.168.1.10", "targetPort": 3389, "remotePort": 20001,
 	}
+	for _, raw := range []string{`{"relay":null}`, `{"relay":"false"}`, `{"relay":0}`} {
+		portForward["options"] = raw
+		r = env.do(t, http.MethodPost, "/api/v1/forwards", portForward, true)
+		r.Body.Close()
+		if r.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid relay option %s status = %d", raw, r.StatusCode)
+		}
+	}
+	delete(portForward, "options")
 	r = env.do(t, http.MethodPost, "/api/v1/forwards", portForward, true)
 	if r.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(r.Body)
@@ -316,8 +328,15 @@ func TestAgentHandshakeMarksDeviceOnline(t *testing.T) {
 		}
 	}
 	writeFrame(map[string]any{"type": "heartbeat", "ts": time.Now().Unix()})
-	if got := readFrame()["type"]; got != "heartbeat_ack" {
-		t.Fatalf("heartbeat ack type = %v", got)
+	for {
+		got := readFrame()["type"]
+		if got == "heartbeat_ack" {
+			break
+		}
+		// Configuration pushes are asynchronous to the heartbeat response.
+		if got != "config" {
+			t.Fatalf("unexpected frame before heartbeat ack: %v", got)
+		}
 	}
 
 	r = env.do(t, http.MethodGet, "/api/v1/overview", nil, false)
@@ -405,10 +424,19 @@ func TestCredentialAndAssetRoutes(t *testing.T) {
 		t.Fatal("reveal returned the wrong secret")
 	}
 
-	// Private keys are replace-only, even after step-up.
+	// Private keys must parse at import and remain replace-only after step-up.
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 	r = env.do(t, http.MethodPost, "/api/v1/credentials", map[string]any{
 		"name": "deploy-key", "kind": "ssh_key", "username": "deploy",
-		"secret": "private-key-material",
+		"secret": privatePEM,
 	}, true)
 	if r.StatusCode != http.StatusCreated {
 		t.Fatalf("create ssh_key status = %d", r.StatusCode)
@@ -638,7 +666,7 @@ func TestRelayConfigPush(t *testing.T) {
 	}
 
 	if err := nodeConn.Write(ctx, websocket.MessageText,
-		[]byte(`{"type":"bind_result","forwardId":"`+createdForward.ID+`","ok":true}`)); err != nil {
+		[]byte(`{"type":"bind_result","forwardId":"`+createdForward.ID+`","revision":1,"ok":true}`)); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)

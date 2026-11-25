@@ -56,8 +56,8 @@ export function bootstrapSession(): Promise<void> {
   return bootPromise
 }
 
-export async function login(username: string, credential: string): Promise<User> {
-  const snapshot = await authApi.login(username, credential)
+export async function login(username: string, credential: string, otp = ''): Promise<User> {
+  const snapshot = await authApi.login(username, credential, otp)
   accept(snapshot)
   session.ready = true
   return snapshot.user

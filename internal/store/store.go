@@ -25,6 +25,7 @@ import (
 	"golang.org/x/crypto/argon2"
 
 	"server-aibot/internal/model"
+	"server-aibot/internal/vault"
 
 	_ "modernc.org/sqlite"
 )
@@ -114,6 +115,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
+		}
+		if version == 16 {
+			if err := migrateAIDraftCompat(ctx, tx); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("migration %s: %w", entry.Name(), err)
+			}
 		}
 		if _, err := tx.ExecContext(ctx, string(body)); err != nil {
 			tx.Rollback()
@@ -287,7 +294,7 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]model.AuditLog, err
 // ---------- devices ----------
 
 func (s *Store) ListDevices(ctx context.Context) ([]model.Device, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,remark,tags,key_prefix,status,version,os,arch,last_seen_at,created_at,updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,remark,tags,key_prefix,status,version,os,arch,last_seen_at,created_at,updated_at,(key_ct IS NOT NULL AND length(key_ct)>0 AND key_id<>'')
 		FROM devices ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -305,7 +312,7 @@ func (s *Store) ListDevices(ctx context.Context) ([]model.Device, error) {
 }
 
 func (s *Store) GetDevice(ctx context.Context, id string) (*model.Device, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,remark,tags,key_prefix,status,version,os,arch,last_seen_at,created_at,updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,remark,tags,key_prefix,status,version,os,arch,last_seen_at,created_at,updated_at,(key_ct IS NOT NULL AND length(key_ct)>0 AND key_id<>'')
 		FROM devices WHERE id=?`, id)
 	return scanDevice(row)
 }
@@ -317,7 +324,7 @@ func scanDevice(row scanner) (*model.Device, error) {
 	var lastSeen sql.NullString
 	var created, updated string
 	err := row.Scan(&d.ID, &d.Name, &d.Remark, &d.Tags, &d.KeyPrefix, &d.Status, &d.Version, &d.OS, &d.Arch,
-		&lastSeen, &created, &updated)
+		&lastSeen, &created, &updated, &d.KeyRetrievable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -330,8 +337,9 @@ func scanDevice(row scanner) (*model.Device, error) {
 	return d, nil
 }
 
-// CreateDevice issues a key once and stores only its hash.
-func (s *Store) CreateDevice(ctx context.Context, name, remark, tags string) (*model.Device, string, error) {
+// CreateDevice stores the authentication hash and, when supplied, a vault-encrypted key.
+// Omitting the vault preserves compatibility with hash-only callers.
+func (s *Store) CreateDevice(ctx context.Context, name, remark, tags string, vaults ...*vault.Vault) (*model.Device, string, error) {
 	key, err := randomToken(32)
 	if err != nil {
 		return nil, "", err
@@ -344,9 +352,14 @@ func (s *Store) CreateDevice(ctx context.Context, name, remark, tags string) (*m
 		ID: newID("dev"), Name: name, Remark: remark, Tags: tags,
 		Status: "offline", KeyPrefix: prefix,
 	}
+	sealed, keyID, err := sealDeviceKey(d.ID, key, vaults)
+	if err != nil {
+		return nil, "", err
+	}
+	d.KeyRetrievable = len(sealed) > 0
 	ts := now()
-	_, err = s.db.ExecContext(ctx, `INSERT INTO devices(id,name,remark,tags,key_hash,key_prefix,status,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?)`, d.ID, d.Name, d.Remark, d.Tags, tokenHash(key), prefix, d.Status, ts, ts)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO devices(id,name,remark,tags,key_hash,key_prefix,status,created_at,updated_at,key_ct,key_id)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, d.ID, d.Name, d.Remark, d.Tags, tokenHash(key), prefix, d.Status, ts, ts, sealed, keyID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -392,14 +405,18 @@ func (s *Store) DeleteDevice(ctx context.Context, id string) error {
 }
 
 // RotateDeviceKey returns the new key; the old one stops working immediately.
-func (s *Store) RotateDeviceKey(ctx context.Context, id string) (string, error) {
+func (s *Store) RotateDeviceKey(ctx context.Context, id string, vaults ...*vault.Vault) (string, error) {
 	key, err := randomToken(32)
 	if err != nil {
 		return "", err
 	}
 	prefix := key[:8]
-	res, err := s.db.ExecContext(ctx, `UPDATE devices SET key_hash=?,key_prefix=?,updated_at=? WHERE id=?`,
-		tokenHash(key), prefix, now(), id)
+	sealed, keyID, err := sealDeviceKey(id, key, vaults)
+	if err != nil {
+		return "", err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE devices SET key_hash=?,key_prefix=?,updated_at=?,key_ct=?,key_id=? WHERE id=?`,
+		tokenHash(key), prefix, now(), sealed, keyID, id)
 	if err != nil {
 		return "", err
 	}
@@ -451,7 +468,7 @@ func (s *Store) MarkAllDevicesOffline(ctx context.Context) error {
 const nodeColumns = `id,name,remark,tags,addr,protocol,http_port,replace_address,forward_ports,domain,url_template,
 	deny_domain_prefix,allow_wildcard,feature_web,feature_forward,feature_tunnel,feature_p2p,feature_proxy,
 	max_pool_count,p2p_disable_forward,rules,limit_total_gb,limit_kind,limit_reset_day,limiter_mbps,concurrency,connections,
-	status,last_seen_at,created_at,updated_at,key_prefix`
+	status,last_seen_at,created_at,updated_at,key_prefix,rendezvous_address`
 
 func (s *Store) ListNodes(ctx context.Context) ([]model.Node, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+nodeColumns+` FROM nodes ORDER BY name`)
@@ -483,7 +500,7 @@ func scanNode(row scanner) (*model.Node, error) {
 		&n.ForwardPorts, &n.Domain, &n.URLTemplate, &n.DenyDomainPrefix, &wildcard,
 		&web, &forward, &tunnel, &p2p, &proxy, &n.MaxPoolCount, &p2pNoForward, &n.Rules,
 		&n.LimitTotalGB, &n.LimitKind, &n.LimitResetDay, &n.LimiterMbps, &n.Concurrency, &n.Connections,
-		&n.Status, &lastSeen, &created, &updated, &n.KeyPrefix)
+		&n.Status, &lastSeen, &created, &updated, &n.KeyPrefix, &n.RendezvousAddress)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -523,13 +540,13 @@ func (s *Store) CreateNode(ctx context.Context, n model.Node) (*model.Node, stri
 	_, err = s.db.ExecContext(ctx, `INSERT INTO nodes(id,name,remark,tags,addr,protocol,http_port,replace_address,forward_ports,
 		domain,url_template,deny_domain_prefix,allow_wildcard,feature_web,feature_forward,feature_tunnel,feature_p2p,feature_proxy,
 		max_pool_count,p2p_disable_forward,rules,limit_total_gb,limit_kind,limit_reset_day,limiter_mbps,concurrency,connections,
-		status,last_seen_at,created_at,updated_at,key_hash,key_prefix)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		status,last_seen_at,created_at,updated_at,key_hash,key_prefix,rendezvous_address)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		n.ID, n.Name, n.Remark, n.Tags, n.Addr, n.Protocol, n.HTTPPort, n.ReplaceAddress, n.ForwardPorts, n.Domain, n.URLTemplate,
 		n.DenyDomainPrefix, b2i(n.AllowWildcard), b2i(n.Features.Web), b2i(n.Features.Forward), b2i(n.Features.Tunnel),
 		b2i(n.Features.P2P), b2i(n.Features.Proxy), n.MaxPoolCount, b2i(n.P2PDisableForward), n.Rules,
 		n.LimitTotalGB, n.LimitKind, n.LimitResetDay, n.LimiterMbps, n.Concurrency, n.Connections, n.Status, nil, ts, ts,
-		tokenHash(key), prefix)
+		tokenHash(key), prefix, n.RendezvousAddress)
 	if err != nil {
 		return nil, "", err
 	}
@@ -596,11 +613,11 @@ func (s *Store) UpdateNode(ctx context.Context, n model.Node) (*model.Node, erro
 	res, err := s.db.ExecContext(ctx, `UPDATE nodes SET name=?,remark=?,tags=?,addr=?,protocol=?,http_port=?,replace_address=?,
 		forward_ports=?,domain=?,url_template=?,deny_domain_prefix=?,allow_wildcard=?,feature_web=?,feature_forward=?,
 		feature_tunnel=?,feature_p2p=?,feature_proxy=?,max_pool_count=?,p2p_disable_forward=?,rules=?,limit_total_gb=?,
-		limit_kind=?,limit_reset_day=?,limiter_mbps=?,concurrency=?,connections=?,updated_at=? WHERE id=?`,
+		limit_kind=?,limit_reset_day=?,limiter_mbps=?,concurrency=?,connections=?,updated_at=?,rendezvous_address=? WHERE id=?`,
 		n.Name, n.Remark, n.Tags, n.Addr, n.Protocol, n.HTTPPort, n.ReplaceAddress, n.ForwardPorts, n.Domain, n.URLTemplate,
 		n.DenyDomainPrefix, b2i(n.AllowWildcard), b2i(n.Features.Web), b2i(n.Features.Forward), b2i(n.Features.Tunnel),
 		b2i(n.Features.P2P), b2i(n.Features.Proxy), n.MaxPoolCount, b2i(n.P2PDisableForward), n.Rules, n.LimitTotalGB,
-		n.LimitKind, n.LimitResetDay, n.LimiterMbps, n.Concurrency, n.Connections, now(), n.ID)
+		n.LimitKind, n.LimitResetDay, n.LimiterMbps, n.Concurrency, n.Connections, now(), n.RendezvousAddress, n.ID)
 	if err != nil {
 		return nil, err
 	}

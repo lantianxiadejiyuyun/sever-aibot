@@ -8,6 +8,7 @@ import {
   Loader2,
   Pencil,
   Play,
+ Square,
   Plus,
   RefreshCw,
   Search,
@@ -18,6 +19,7 @@ import StatusBadge from '@/components/ui/StatusBadge.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import { devicesApi, forwardsApi, nodesApi } from '@/api/endpoints'
 import { errorMessage } from '@/api/client'
+import { forwardRuntimeApi } from '@/api/forwardRuntime'
 import { confirmAction } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import type { Device, Forward, Node } from '@/api/types'
@@ -118,7 +120,7 @@ function setKind(value: string): void {
 async function apply(item: Forward): Promise<void> {
   applyingId.value = item.id
   try {
-    const result = await forwardsApi.apply(item.id)
+    const result = await forwardRuntimeApi.start(item.id)
     if (result.lastError) {
       toast.warning('已推送，等待连接', result.lastError)
     } else {
@@ -132,11 +134,15 @@ async function apply(item: Forward): Promise<void> {
   }
 }
 
+async function stop(item: Forward): Promise<void> {
+ applyingId.value = item.id
+ try { await forwardRuntimeApi.stop(item.id); toast.success('已请求停止，等待节点确认'); await loadForwards() } catch (err) { toast.error('停止失败', errorMessage(err)) } finally { applyingId.value = '' }
+}
 async function remove(item: Forward): Promise<void> {
   const ok = await confirmAction({
     title: '删除转发',
     message: `确认删除转发「${item.name}」吗？`,
-    detail: '该操作不可撤销。删除后会同时关闭节点入口并移除 Agent 隧道配置。',
+    detail: '仅已停止并确认撤销的转发可以删除。历史日流量继续保留。',
     confirmText: '删除转发',
     danger: true,
   })
@@ -287,18 +293,18 @@ onMounted(() => {
                 <button
                   type="button"
                   class="btn btn-sm"
-                  :disabled="applyingId === item.id || item.kind !== 'port'"
-                  :title="item.kind !== 'port' ? '当前仅支持 port 类型下发' : ''"
+                  :disabled="applyingId === item.id"
                   @click="apply(item)"
                 >
                   <Loader2 v-if="applyingId === item.id" :size="14" class="spin" aria-hidden="true" />
                   <Play v-else :size="14" aria-hidden="true" />
                   下发
                 </button>
+                <button type="button" class="btn btn-sm" :disabled="applyingId === item.id || ['stopping', 'stopped'].includes(item.state)" @click="stop(item)"><Square :size="14" aria-hidden="true" />{{ item.state === 'stopping' ? '等待撤销' : '停止' }}</button>
                 <button
                   type="button"
                   class="btn btn-sm btn-danger"
-                  :disabled="deletingId === item.id"
+                  :disabled="deletingId === item.id || !['saved', 'stopped'].includes(item.state)"
                   @click="remove(item)"
                 >
                   <Loader2 v-if="deletingId === item.id" :size="14" class="spin" aria-hidden="true" />

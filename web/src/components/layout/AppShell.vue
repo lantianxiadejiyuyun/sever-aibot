@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { X } from 'lucide-vue-next'
 import SidebarContent from './SidebarContent.vue'
 import AppTopbar from './AppTopbar.vue'
 import BottomNav from './BottomNav.vue'
+import { siteName, announcement, siteError, online, loadSiteSettings } from '@/composables/useConsoleShell'
 
 const route = useRoute()
 const drawerOpen = ref(false)
@@ -32,7 +33,22 @@ watch(
   },
 )
 
+function connectivityChanged() {
+  online.value = navigator.onLine
+  if (online.value) void loadSiteSettings()
+}
+function refreshSettings() { if (online.value) void loadSiteSettings() }
+watch(() => route.path, (_path, previous) => { if (previous === '/settings') refreshSettings() })
+onMounted(() => {
+  connectivityChanged()
+  window.addEventListener('online', connectivityChanged)
+  window.addEventListener('offline', connectivityChanged)
+  window.addEventListener('focus', refreshSettings)
+})
 onBeforeUnmount(() => {
+  window.removeEventListener('online', connectivityChanged)
+  window.removeEventListener('offline', connectivityChanged)
+  window.removeEventListener('focus', refreshSettings)
   if (drawerOpen.value) closeDrawer()
   window.removeEventListener('keydown', onKeydown)
 })
@@ -47,7 +63,11 @@ onBeforeUnmount(() => {
     <div class="app-main">
       <AppTopbar @menu="openDrawer" />
       <main class="page-container">
-        <RouterView />
+        <p class="site-heading">{{ siteName }}</p>
+        <p v-if="announcement" class="notice notice-info site-announcement" role="status">{{ announcement }}</p>
+        <p v-if="siteError" class="notice notice-warning" role="alert">站点设置加载失败：{{ siteError }} <button class="btn btn-sm" :disabled="!online" @click="refreshSettings">重试</button></p>
+        <div v-if="!online" class="notice notice-warning" role="alert">当前离线，资产、凭据和终端操作已暂停。连接网络后将重新加载页面数据；离线不提供缓存的业务数据。</div>
+        <RouterView v-else />
       </main>
     </div>
 

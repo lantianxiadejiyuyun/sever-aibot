@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlertCircle, Eye, EyeOff, Loader2, LockKeyhole, ShieldCheck, UserRound } from 'lucide-vue-next'
 import { login } from '@/stores/session'
-import { errorMessage } from '@/api/client'
+import { ApiError, errorMessage } from '@/api/client'
 import { safeRedirect } from '@/router/redirect'
 import { useToast } from '@/composables/useToast'
 import ThemeToggle from '@/components/ui/ThemeToggle.vue'
@@ -17,6 +17,12 @@ const credential = ref('')
 const showSecret = ref(false)
 const submitting = ref(false)
 const error = ref('')
+const otpRequired = ref(false)
+const otp = ref('')
+function clearSecrets() { credential.value = ''; otp.value = ''; showSecret.value = false }
+function hidden() { if (document.hidden) clearSecrets() }
+onMounted(() => document.addEventListener('visibilitychange', hidden))
+onBeforeUnmount(() => { clearSecrets(); document.removeEventListener('visibilitychange', hidden) })
 
 // Built from fragments so the source never contains a credential-shaped literal.
 const maskedType = 'pass' + 'word'
@@ -34,12 +40,19 @@ async function submit(): Promise<void> {
   }
   submitting.value = true
   try {
-    await login(username.value.trim(), credential.value)
+    await login(username.value.trim(), credential.value, otp.value.trim())
+    clearSecrets()
     toast.success('登录成功')
     await router.replace(redirectTarget.value)
   } catch (err) {
     error.value = errorMessage(err)
-    credential.value = ''
+    if (err instanceof ApiError && (err.code === 'otp_required' || err.code === 'invalid_otp')) {
+      otpRequired.value = true
+      otp.value = ''
+      showSecret.value = false
+    } else {
+      clearSecrets()
+    }
   } finally {
     submitting.value = false
   }
@@ -66,7 +79,7 @@ async function submit(): Promise<void> {
         <p>设备接入、节点能力、端口与域名转发、操作审计，在同一条可信链路上完成。</p>
         <div class="login-points">
           <div class="login-point"><ShieldCheck :size="17" /> HttpOnly 会话 + CSRF 双校验</div>
-          <div class="login-point"><LockKeyhole :size="17" /> 设备密钥仅显示一次，服务端只存哈希</div>
+          <div class="login-point"><LockKeyhole :size="17" /> 设备密钥加密保存，二次验证后可查看</div>
           <div class="login-point"><UserRound :size="17" /> 所有状态变更写入审计日志</div>
         </div>
       </div>
@@ -125,6 +138,12 @@ async function submit(): Promise<void> {
                 <Eye v-else :size="17" aria-hidden="true" />
               </button>
             </div>
+          </div>
+
+          <div v-if="otpRequired" class="form-field">
+            <label class="form-label" for="login-otp">验证器验证码或一次性恢复码</label>
+            <input id="login-otp" v-model="otp" class="input mono" autocomplete="one-time-code" maxlength="32" spellcheck="false" required placeholder="6 位验证码或 32 位恢复码" />
+            <p class="form-hint">验证码只能使用一次；如刚完成绑定，请等待验证器生成下一组验证码。</p>
           </div>
 
           <div v-if="error" class="login-error" role="alert">

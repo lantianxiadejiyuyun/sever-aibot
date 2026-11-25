@@ -1,20 +1,72 @@
 <script setup lang="ts">
-import { ClipboardCheck } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
-import ComingSoon from '@/components/ui/ComingSoon.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
+import { request, errorMessage } from '@/api/client'
+import { confirmAction } from '@/composables/useConfirm'
+interface Check { id: string; name: string; kind: string; targetKind: string; targetId: string; path: string; scheme: string; timeoutMs: number; intervalSeconds: number; enabled: boolean; state?: string; checkedAt?: number; metric: string; threshold: number; maxAgeSeconds: number; profile: string }
+interface Run { id: string; checkId: string; checkName: string; state: string; message: string; latencyMs: number; createdAt: number; previousState: string; score: number | null; detail: { source: string; profile?: string; evidence?: { name: string; state: string; summary: string; output?: string }[] } }
+interface Batch { id: string; name: string; state: string; createdAt: number; completedAt: number; runs: Run[]; failures: { checkId: string; message: string }[]; score: number | null; healthy: number; failed: number; stale: number; previousBatchId?: string; previousScore: number | null; scoreDelta: number | null }
+const batches = ref<Batch[]>([]), batchOpen = ref(false), batchName = ref('手动巡检'), batchIDs = ref<string[]>([]), batchDetail = ref<Batch | null>(null), evidenceRun = ref<Run | null>(null)
+let poll: ReturnType<typeof setInterval> | undefined
+interface Alert { id: string; checkId: string; state: string; message: string; acknowledged: boolean; silenceUntil: number; resolved: boolean }
+interface Target { id: string; name: string }
+const checks = ref<Check[]>([]), runs = ref<Run[]>([]), alerts = ref<Alert[]>([]), assets = ref<Target[]>([]), forwards = ref<Target[]>([]), devices = ref<Target[]>([])
+const busy = ref(false), loading = ref(false), error = ref(''), formError = ref(''), opened = ref(false)
+const defaults = (): Check => ({ id: '', name: '', kind: 'tcp', targetKind: 'asset', targetId: '', path: '/', scheme: 'https', timeoutMs: 5000, intervalSeconds: 300, enabled: true, metric: 'cpu', threshold: 80, maxAgeSeconds: 120, profile: 'system' })
+const form = ref<Check>(defaults())
+const targets = computed(() => form.value.targetKind === 'device' ? devices.value : form.value.targetKind === 'asset' ? assets.value : forwards.value)
+function changeKind() { form.value.targetKind = form.value.kind === 'metric' ? 'device' : 'asset'; form.value.targetId = '' }
+function date(t?: number) { return t ? new Date(t * 1000).toLocaleString() : '尚未运行' }
+function state(s?: string) { return ({ up: '正常', down: '异常', stale: '未验证 / 过期' } as Record<string, string>)[s || 'stale'] || s }
+async function load() {
+  loading.value = true; error.value = ''
+  const results = await Promise.allSettled([request<{items: Check[]}>('/checks'), request<{items: Run[]}>('/inspection-runs'), request<{items: Alert[]}>('/alerts'), request<{items: Target[]}>('/assets'), request<{items: Target[]}>('/forwards'), request<{items: Target[]}>('/devices'), request<{items: Batch[]}>('/inspection-batches')])
+  const [c, r, a, ast, f, d, b] = results
+  if (c.status === 'fulfilled') checks.value = c.value.items
+  if (r.status === 'fulfilled') runs.value = r.value.items
+  if (a.status === 'fulfilled') alerts.value = a.value.items
+  if (ast.status === 'fulfilled') assets.value = ast.value.items
+  if (f.status === 'fulfilled') forwards.value = f.value.items
+  if (d.status === 'fulfilled') devices.value = d.value.items
+  if (b.status === 'fulfilled') batches.value = b.value.items
+  results.forEach((v, i) => { if (v.status === 'rejected') error.value += `${['检查定义', '巡检报告', '告警', '资产', '转发', '设备', '批次报告'][i]}：${errorMessage(v.reason)}；` })
+  loading.value = false
+}
+function edit(c?: Check) { form.value = c ? { ...c } : defaults(); formError.value = ''; opened.value = true }
+async function save() {
+  busy.value = true; formError.value = ''
+  try { await request(form.value.id ? `/checks/${form.value.id}` : '/checks', { method: form.value.id ? 'PUT' : 'POST', body: form.value }); opened.value = false; await load() }
+  catch (e) { formError.value = errorMessage(e) } finally { busy.value = false }
+}
+async function action(path: string, method: 'POST' | 'DELETE' = 'POST', body?: unknown) {
+  busy.value = true; error.value = ''
+  try { await request(path, { method, body }); await load() } catch (e) { error.value = errorMessage(e) } finally { busy.value = false }
+}
+async function remove(c: Check) { if (await confirmAction({ title: '删除检查', message: `删除「${c.name}」？`, detail: '历史报告将保留，当前告警会关闭。', danger: true, confirmText: '删除' })) await action(`/checks/${c.id}`, 'DELETE') }
+function download() {
+  const url = URL.createObjectURL(new Blob([JSON.stringify({ generatedAt: new Date().toISOString(), runs: runs.value }, null, 2)], { type: 'application/json' }))
+  const link = document.createElement('a'); link.href = url; link.download = 'inspection-report.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+function openBatch() { batchIDs.value = checks.value.filter(c => c.enabled).slice(0, 50).map(c => c.id); batchOpen.value = true; formError.value = '' }
+async function startBatch() { busy.value = true; formError.value = ''; try { await request('/inspection-batches', { method: 'POST', body: { name: batchName.value, checkIds: batchIDs.value } }); batchOpen.value = false; await load() } catch (e) { formError.value = errorMessage(e) } finally { busy.value = false } }
+function exportBatch(b: Batch) { const url = URL.createObjectURL(new Blob([JSON.stringify(b, null, 2)], { type: 'application/json' })); const link = document.createElement('a'); link.href = url; link.download = `inspection-${b.id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000) }
+onMounted(() => { void load(); poll = setInterval(() => { if (!loading.value && !busy.value && batches.value.some(b => b.state === 'running')) void load() }, 5000) })
+onUnmounted(() => { if (poll) clearInterval(poll) })
 </script>
-
 <template>
-  <PageHeader eyebrow="MONITOR / INSPECTIONS" title="巡检" />
-  <ComingSoon
-    :icon="ClipboardCheck"
-    title="巡检功能即将上线"
-    description="该功能尚未进入当前里程碑。"
-    :planned="[
-      '巡检任务排期与手动触发',
-      '磁盘、内存、负载、服务与证书检查项',
-      '巡检评分、发现项与历史对比',
-      '可导出报告与通知渠道联动',
-    ]"
-  />
+  <PageHeader eyebrow="MONITOR / INSPECTIONS" title="巡检"><template #actions><button class="btn" :disabled="busy || loading" @click="load">刷新</button><button class="btn" :disabled="busy || loading || !checks.length" @click="openBatch">运行批次</button><button class="btn btn-primary" :disabled="busy || loading" @click="edit()">新建检查</button></template></PageHeader>
+  <p v-if="error" class="notice notice-danger" role="alert">{{ error }}</p>
+  <p v-if="loading" role="status">正在加载巡检数据…</p>
+  <section class="panel"><div class="panel-header"><h2>检查定义</h2></div><p class="panel-body">支持 TCP / HTTP、设备指标及固定只读 SSH 巡检。转发探测来源为控制面（control），访问真实公网入口，并非外部独立探针；私有入口明确不支持。未验证或过期结果显示 stale。</p>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>名称 / 类型</th><th>目标</th><th>状态</th><th>周期 / 上次检查</th><th>操作</th></tr></thead><tbody><tr v-for="c in checks" :key="c.id"><td>{{ c.name }}<div class="cell-sub">{{ c.kind.toUpperCase() }} · {{ c.enabled ? '启用' : '暂停' }}</div></td><td>{{ [...assets, ...forwards, ...devices].find(t => t.id === c.targetId)?.name || c.targetId }}</td><td>{{ state(c.state) }}</td><td>{{ c.intervalSeconds }} 秒<div class="cell-sub">{{ date(c.checkedAt) }}</div></td><td><div class="action-row"><button class="btn btn-sm" :disabled="busy || loading" @click="action(`/checks/${c.id}/run`)">立即运行</button><button class="btn btn-sm" :disabled="busy || loading" @click="edit(c)">编辑</button><button class="btn btn-sm btn-danger" :disabled="busy || loading" @click="remove(c)">删除</button></div></td></tr></tbody></table></div><p v-if="!loading && !checks.length" class="panel-body">暂无检查定义。</p>
+  </section>
+  <section class="panel"><div class="panel-header"><h2>告警</h2></div><div class="table-wrap"><table class="data-table"><thead><tr><th>检查</th><th>发现</th><th>处理状态</th><th>操作</th></tr></thead><tbody><tr v-for="a in alerts" :key="a.id"><td>{{ checks.find(c => c.id === a.checkId)?.name || a.checkId }}</td><td>{{ state(a.state) }} · {{ a.message }}</td><td>{{ a.resolved ? '已恢复 / 关闭' : a.acknowledged ? '已确认' : '待确认' }}<div v-if="a.silenceUntil > Date.now()/1000" class="cell-sub">静默至 {{ date(a.silenceUntil) }}</div></td><td><div v-if="!a.resolved" class="action-row"><button class="btn btn-sm" :disabled="busy || a.acknowledged" @click="action(`/alerts/${a.id}/ack`)">确认</button><button class="btn btn-sm" :disabled="busy" @click="action(`/alerts/${a.id}/silence`, 'POST', { seconds: 3600 })">静默 1 小时</button><button v-if="a.silenceUntil" class="btn btn-sm" :disabled="busy" @click="action(`/alerts/${a.id}/silence`, 'POST', { seconds: 0 })">取消静默</button></div></td></tr></tbody></table></div><p v-if="!loading && !alerts.length" class="panel-body">暂无告警。</p></section>
+  <section class="panel"><div class="panel-header"><h2>巡检报告</h2><button class="btn btn-sm" :disabled="!runs.length" @click="download">导出当前报告</button></div><p class="panel-body">最近 200 次检查，按同一检查与上次结果比较。评分规则：正常 100 分、异常 0 分，未验证不评分；不会把缺失指标算作健康。</p><div class="table-wrap"><table class="data-table"><thead><tr><th>时间</th><th>检查</th><th>结果</th><th>评分 / 历史比较</th><th>耗时</th></tr></thead><tbody><tr v-for="r in runs" :key="r.id"><td>{{ date(r.createdAt) }}</td><td>{{ r.checkName }}</td><td>{{ state(r.state) }} · {{ r.message }}<div class="cell-sub">来源：{{ r.detail?.source || '未记录' }}</div><button v-if="r.detail?.evidence?.length" class="btn btn-sm" @click="evidenceRun = r">查看证据</button></td><td>{{ r.score === null ? '未评分' : `${r.score} 分` }}<div class="cell-sub">{{ r.previousState ? `${state(r.previousState)} → ${state(r.state)}` : '首次检查' }}</div></td><td>{{ r.latencyMs }} ms</td></tr></tbody></table></div><p v-if="!loading && !runs.length" class="panel-body">暂无巡检报告。</p></section>
+  <section class="panel"><div class="panel-header"><h2>批次报告</h2></div><p class="panel-body">评分为已验证检查中正常项的百分比，未验证项单独计数；仅相同检查集合与上个已完成批次比较。</p><div class="table-wrap"><table class="data-table"><thead><tr><th>批次 / 时间</th><th>状态</th><th>正常 / 异常 / 未验证</th><th>评分 / 变化</th><th>操作</th></tr></thead><tbody><tr v-for="b in batches" :key="b.id"><td>{{ b.name }}<div class="cell-sub">{{ date(b.createdAt) }}</div></td><td>{{ b.state === 'running' ? '运行中' : b.state === 'complete' ? '已完成' : '已中断' }}</td><td>{{ b.healthy }} / {{ b.failed }} / {{ b.stale }}</td><td>{{ b.score === null ? '未评分' : `${b.score} 分` }}<div class="cell-sub">{{ b.scoreDelta === null ? '无可比历史' : `较上次 ${b.scoreDelta > 0 ? '+' : ''}${b.scoreDelta}` }}</div></td><td><button class="btn btn-sm" @click="batchDetail = b">详情</button> <button class="btn btn-sm" :disabled="b.state === 'running'" @click="exportBatch(b)">导出</button></td></tr></tbody></table></div><p v-if="!batches.length" class="panel-body">暂无批次报告。</p></section>
+  <BaseModal :open="batchOpen" title="运行巡检批次" @close="!busy && (batchOpen = false)"><form class="stack" @submit.prevent="startBatch"><p v-if="formError" class="notice notice-danger">{{ formError }}</p><label>批次名称<input v-model="batchName" class="input" required maxlength="120" /></label><p>选择 1 到 50 个检查。后台运行，关闭页面不会取消。</p><label v-for="c in checks" :key="c.id"><input v-model="batchIDs" type="checkbox" :value="c.id" /> {{ c.name }} · {{ c.kind }}</label><button class="btn btn-primary" :disabled="busy || !batchIDs.length || batchIDs.length > 50">开始运行</button></form></BaseModal>
+  <BaseModal :open="!!batchDetail" title="批次报告详情" wide @close="batchDetail = null"><div v-if="batchDetail" class="stack"><h3>{{ batchDetail.name }}</h3><p>状态：{{ batchDetail.state }}；评分：{{ batchDetail.score ?? '未评分' }}；上一批次：{{ batchDetail.previousBatchId || '无可比历史' }}</p><div v-for="r in batchDetail.runs" :key="r.id"><strong>{{ r.checkName }} · {{ state(r.state) }}</strong><p>{{ r.message }}</p><p>来源：{{ r.detail?.source || '未记录' }}</p><button v-if="r.detail?.evidence?.length" class="btn btn-sm" @click="evidenceRun = r; batchDetail = null">查看结构化证据</button></div><p v-for="f in batchDetail.failures" :key="f.checkId" class="notice notice-warning">{{ f.checkId }}：{{ f.message }}</p></div></BaseModal>
+  <BaseModal :open="!!evidenceRun" title="只读巡检证据" wide @close="evidenceRun = null"><div v-if="evidenceRun" class="stack"><p>{{ evidenceRun.checkName }} · {{ evidenceRun.detail.source }} · {{ evidenceRun.detail.profile }}</p><div v-for="e in evidenceRun.detail.evidence" :key="e.name"><strong>{{ e.name }} · {{ state(e.state) }}</strong><p>{{ e.summary }}</p><pre style="white-space: pre-wrap; overflow-wrap: anywhere">{{ e.output }}</pre></div></div></BaseModal>
+  <BaseModal :open="opened" :title="form.id ? '编辑检查' : '新建检查'" @close="!busy && (opened = false)"><form class="stack" @submit.prevent="save"><p v-if="formError" class="notice notice-danger" role="alert">{{ formError }}</p><label>名称<input v-model="form.name" class="input" required maxlength="120" /></label><label>检查类型<select v-model="form.kind" class="select" @change="changeKind"><option value="tcp">TCP 连接</option><option value="http">HTTP 响应</option><option value="metric">设备指标阈值</option><option value="ssh">固定只读 SSH</option></select></label><label>目标类型<select v-model="form.targetKind" class="select" @change="form.targetId = ''"><option v-if="form.kind === 'metric'" value="device">设备</option><template v-else><option value="asset">资产</option><option v-if="form.kind !== 'ssh'" value="forward">转发公网入口</option></template></select></label><label>登记目标<select v-model="form.targetId" class="select" required><option value="" disabled>选择登记目标</option><option v-for="t in targets" :key="t.id" :value="t.id">{{ t.name }}</option></select></label><template v-if="form.kind === 'ssh'"><label>固定只读配置<select v-model="form.profile" class="select"><option value="system">系统信息 / 磁盘 / 内存</option><option value="services">失败服务</option><option value="docker">容器状态</option><option value="firewall">防火墙规则证据</option></select></label><p class="form-hint">必须固定 SSH 主机指纹并绑定凭据。每项输出最多 16 KiB，不接受自定义命令；系统/防火墙证据不代表策略合规。</p></template><template v-if="form.kind === 'metric'"><label>指标<select v-model="form.metric" class="select"><option value="cpu">CPU 使用率（%）</option><option value="memory">内存使用率（%）</option><option value="root_disk">根分区使用率（%）</option><option value="load">一分钟负载</option></select></label><label>告警阈值（大于等于）<input v-model.number="form.threshold" class="input" type="number" min="0.01" step="0.01" :max="form.metric === 'load' ? undefined : 100" required /></label><label>指标有效期（秒）<input v-model.number="form.maxAgeSeconds" class="input" type="number" min="60" max="3600" required /></label></template><template v-if="form.kind === 'http'"><label>协议<select v-model="form.scheme" class="select"><option value="https">HTTPS</option><option value="http">HTTP</option></select></label><label>路径<input v-model="form.path" class="input" required placeholder="/healthz" /></label><p class="form-hint">2xx 为成功；不跟随重定向，响应最大 1 MiB，HTTPS 校验证书。</p></template><label>超时（毫秒）<input v-model.number="form.timeoutMs" class="input" type="number" min="100" max="30000" required /></label><label>周期（秒）<input v-model.number="form.intervalSeconds" class="input" type="number" min="30" max="86400" required /></label><label><input v-model="form.enabled" type="checkbox" /> 启用周期检查</label><div class="action-row"><button type="submit" class="btn btn-primary" :disabled="busy">{{ busy ? '保存中…' : '保存' }}</button><button type="button" class="btn" :disabled="busy" @click="opened = false">取消</button></div></form></BaseModal>
 </template>
+<style scoped>.panel { margin-bottom: 20px; }.stack { display: grid; gap: 14px; }.stack label { display: grid; gap: 6px; }.stack label:has(input[type=checkbox]) { display: block; }</style>

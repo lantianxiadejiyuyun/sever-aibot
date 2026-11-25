@@ -2,6 +2,11 @@ import type { Component } from 'vue'
 import {
   ArrowLeftRight,
   Boxes,
+  KeyRound,
+  Bell,
+  Bot,
+  Database,
+  GitPullRequest,
   ClipboardCheck,
   Gauge,
   LayoutDashboard,
@@ -28,6 +33,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: '概览', to: '/', icon: LayoutDashboard },
       { label: '巡检', to: '/inspections', icon: ClipboardCheck },
+      { label: 'AI 助手', to: '/ai', icon: Bot },
       { label: '性能', to: '/metrics', icon: Gauge },
     ],
   },
@@ -38,11 +44,15 @@ export const navGroups: NavGroup[] = [
       { label: '节点', to: '/nodes', icon: Network },
       { label: '转发', to: '/forwards', icon: ArrowLeftRight },
       { label: '资产', to: '/assets', icon: Boxes },
+      { label: '凭据', to: '/credentials', icon: KeyRound },
+      { label: '数据源', to: '/datasources', icon: Database },
+      { label: '变更', to: '/changes', icon: GitPullRequest },
     ],
   },
   {
     label: '系统',
     items: [
+      { label: '通知', to: '/notifications', icon: Bell },
       { label: '审计', to: '/audit', icon: ScrollText },
       { label: '设置', to: '/settings', icon: Settings },
     ],

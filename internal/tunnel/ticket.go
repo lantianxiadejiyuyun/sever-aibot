@@ -27,6 +27,7 @@ var (
 // node. It is signed with a secret derived from the control-plane master key
 // and delivered to the node over its authenticated control socket.
 type Ticket struct {
+	IssuedAt  int64    `json:"issuedAt,omitempty"`
 	DeviceID  string   `json:"deviceId"`
 	NodeID    string   `json:"nodeId"`
 	Forwards  []string `json:"forwards"`

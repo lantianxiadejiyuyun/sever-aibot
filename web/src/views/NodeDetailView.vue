@@ -7,7 +7,7 @@ import StatusBadge from '@/components/ui/StatusBadge.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import SecretDialog from '@/components/ui/SecretDialog.vue'
 import { nodesApi } from '@/api/endpoints'
-import { errorMessage } from '@/api/client'
+import { errorMessage, request } from '@/api/client'
 import { confirmAction } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import type { Node } from '@/api/types'
@@ -26,12 +26,16 @@ const deleting = ref(false)
 const rotating = ref(false)
 const secretOpen = ref(false)
 const nodeKey = ref('')
+const quota = ref<{limitBytes:number;reservedBytes:number;remainingBytes:number;periodStart:string;resetAt:number}|null>(null)
+const quotaError = ref('')
+async function loadQuota() { try { quota.value=await request(`/nodes/${id.value}/quota`);quotaError.value='' } catch(e) { quotaError.value=errorMessage(e) } }
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
     node.value = await nodesApi.get(id.value)
+    await loadQuota()
   } catch (err) {
     error.value = errorMessage(err)
   } finally {
@@ -254,7 +258,10 @@ onMounted(load)
           <div class="panel-head">
             <div>
               <h2 class="panel-title">配额与限速</h2>
-              <p class="panel-sub">节点侧执行的上限参数</p>
+              <p class="panel-sub">写入前持久预留额度，失败写入仍占用额度；与实际送达流量分开统计。</p>
+              <button class="btn btn-sm" @click="loadQuota">刷新额度</button>
+              <p v-if="quotaError" role="alert">{{ quotaError }}</p>
+              <p v-if="quota && quota.limitBytes">已预留 {{ quota.reservedBytes.toLocaleString() }} 字节 / {{ quota.limitBytes.toLocaleString() }} 字节；剩余 {{ quota.remainingBytes.toLocaleString() }} 字节。{{ quota.resetAt ? `下次重置：${new Date(quota.resetAt * 1000).toISOString()}` : '累计额度不自动重置' }}</p>
             </div>
           </div>
           <div class="panel-body">
@@ -269,7 +276,7 @@ onMounted(load)
               </div>
               <div class="meta-row">
                 <span class="meta-label">重置日</span>
-                <span class="meta-value">{{ node.limitResetDay || '不重置' }}</span>
+                <span class="meta-value">{{ node.limitKind === 'monthly' ? (node.limitResetDay || 1) : '不重置' }}</span>
               </div>
               <div class="meta-row">
                 <span class="meta-label">限速</span>

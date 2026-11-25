@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"server-aibot/internal/access"
 	"strings"
 	"sync"
 	"time"
@@ -128,6 +130,12 @@ func (s *Server) createCredential(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid_argument", "凭据内容不能为空")
 		return
 	}
+	if req.Kind == "ssh_key" {
+		if err := access.ValidatePrivateKey([]byte(req.Secret)); err != nil {
+			writeErr(w, 400, "invalid_private_key", err.Error())
+			return
+		}
+	}
 	publicMeta, err := normalizePublicMeta(req.PublicMeta)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid_argument", err.Error())
@@ -174,6 +182,17 @@ func (s *Server) updateCredential(w http.ResponseWriter, r *http.Request) {
 		if *req.Secret == "" {
 			writeErr(w, http.StatusBadRequest, "invalid_argument", "凭据内容不能为空")
 			return
+		}
+		existing, err := s.store.GetCredential(r.Context(), id)
+		if err != nil {
+			s.storeErr(w, err)
+			return
+		}
+		if existing.Kind == "ssh_key" {
+			if err := access.ValidatePrivateKey([]byte(*req.Secret)); err != nil {
+				writeErr(w, 400, "invalid_private_key", err.Error())
+				return
+			}
 		}
 		patch.Secret = req.Secret
 	}
@@ -295,7 +314,41 @@ func (s *Server) revealCredential(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) testCredential(w http.ResponseWriter, r *http.Request) {
-	writeErr(w, http.StatusNotImplemented, "not_implemented", "凭据连通性测试将在中继就绪后提供")
+	if !s.accessStepUp(w, r) {
+		return
+	}
+	var req struct {
+		AssetID string `json:"assetId"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	a, err := s.store.GetAsset(r.Context(), req.AssetID)
+	if err != nil {
+		s.storeErr(w, err)
+		return
+	}
+	if a.CredentialID != chi.URLParam(r, "id") {
+		writeErr(w, 400, "credential_asset_mismatch", "必须指定关联此凭据的资产")
+		return
+	}
+	e, err := s.accessEngine()
+	if err != nil {
+		s.accessError(w, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	client, chain, err := e.SSH(ctx, a.ID)
+	if err != nil {
+		s.auditWithResult(r, "credential.test", a.CredentialID, map[string]string{"assetId": a.ID}, "denied")
+		s.accessError(w, err)
+		return
+	}
+	client.Close()
+	chain.Close()
+	s.audit(r, "credential.test", a.CredentialID, map[string]string{"assetId": a.ID})
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 // ---------- helpers ----------

@@ -5,6 +5,7 @@ import { ArrowLeft, Menu, Settings } from 'lucide-vue-next'
 import { navGroupForPath } from '@/navigation'
 import { session } from '@/stores/session'
 import ThemeToggle from '@/components/ui/ThemeToggle.vue'
+import { layoutMode, setLayoutMode, online } from '@/composables/useConsoleShell'
 
 const emit = defineEmits<{ menu: [] }>()
 const route = useRoute()
@@ -55,9 +56,12 @@ function goBack(): void {
     </div>
     <div class="topbar-right">
       <span class="health-badge">
-        <span class="dot dot-success" aria-hidden="true"></span>
-        控制面在线
+        <span class="dot" :class="online ? 'dot-success' : ''" aria-hidden="true"></span>
+        {{ online ? '网络已连接' : '离线' }}
       </span>
+      <select :value="layoutMode" class="select layout-select" aria-label="控制台视图" @change="setLayoutMode(($event.target as HTMLSelectElement).value as 'auto' | 'mobile' | 'desktop')">
+        <option value="auto">自动视图</option><option value="mobile">手机视图</option><option value="desktop">桌面视图</option>
+      </select>
       <ThemeToggle />
       <RouterLink to="/settings" class="avatar" :aria-label="`当前用户 ${username}，打开设置`" :title="username">
         {{ initial }}

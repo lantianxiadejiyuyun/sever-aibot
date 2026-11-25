@@ -27,7 +27,7 @@ async function create(payload: { name: string; remark: string; tags: string }): 
     createdDevice.value = response.device
     deviceKey.value = response.deviceKey
     secretOpen.value = true
-    toast.success('设备已创建，请保存一次性密钥')
+    toast.success('设备已创建，密钥已加密保存')
   } catch (err) {
     serverError.value = errorMessage(err)
   } finally {
@@ -37,6 +37,7 @@ async function create(payload: { name: string; remark: string; tags: string }): 
 
 function closeSecret(): void {
   secretOpen.value = false
+  deviceKey.value = ''
   const id = createdDevice.value?.id
   if (id) {
     void router.replace(`/devices/${id}`)
@@ -63,9 +64,9 @@ function closeSecret(): void {
     <div class="panel-head">
       <div>
         <h2 class="panel-title">设备信息</h2>
-        <p class="panel-sub">保存后生成一次性 Agent 接入密钥</p>
+        <p class="panel-sub">保存后生成 Agent 接入密钥，并加密保存供后续查看</p>
       </div>
-      <span class="badge badge-info"><KeyRound :size="13" aria-hidden="true" />密钥仅显示一次</span>
+      <span class="badge badge-info"><KeyRound :size="13" aria-hidden="true" />密钥加密保存</span>
     </div>
     <div class="panel-body">
       <DeviceForm
@@ -80,6 +81,7 @@ function closeSecret(): void {
 
   <SecretDialog
     :open="secretOpen"
+    retrievable
     :secret="deviceKey"
     :subject="createdDevice?.name || ''"
     title="设备创建成功"
